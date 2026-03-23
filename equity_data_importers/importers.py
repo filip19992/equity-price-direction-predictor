@@ -23,7 +23,7 @@ class BaseImporter(ABC):
 
     def __init__(self, config: type[Config] = Config) -> None:
         self.config = config
-        self.data_dir = Path(__file__).resolve().parent / "data"
+        self.data_dir = Path(__file__).resolve().parent.parent / "data" / "equity_data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     @abstractmethod
