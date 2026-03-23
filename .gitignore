@@ -1,5 +1,6 @@
 equity_data_importers/data/
 gpw_data_visualisation/data/
+data/
 
 __pycache__/
 */__pycache__/
