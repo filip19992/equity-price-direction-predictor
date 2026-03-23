@@ -112,6 +112,13 @@ class GoogleTrendsImporter(BaseImporter):
 class GdeltImporter(BaseImporter):
     name = "gdelt"
 
+    def __init__(self, config: type[Config] = Config) -> None:
+        super().__init__(config=config)
+        self.gdelt_request_spacing = 15
+        self._last_gdelt_request_at = 0.0
+        self.cache_dir = self.data_dir / "gdelt_cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
     def fetch_metric(
         self,
         query: str,
@@ -121,6 +128,132 @@ class GdeltImporter(BaseImporter):
         mode: str,
         value_name: str,
         retry_delay: int = 5,
+        max_attempts: int = 6,
+        window_days: int = 30,
+    ) -> pd.DataFrame:
+        frames: list[pd.DataFrame] = []
+        current_start = start_date
+        window = dt.timedelta(days=window_days)
+
+        while current_start <= end_date:
+            current_end = min(current_start + window, end_date)
+            frame = self.fetch_metric_window(
+                query=query,
+                start_date=current_start,
+                end_date=current_end,
+                geo=geo,
+                mode=mode,
+                value_name=value_name,
+                retry_delay=retry_delay,
+                max_attempts=max_attempts,
+            )
+            frames.append(frame)
+
+            current_start = current_end + dt.timedelta(days=1)
+            if current_start <= end_date:
+                time.sleep(retry_delay)
+
+        merged = pd.concat(frames).sort_index()
+        merged = merged[~merged.index.duplicated(keep="last")]
+        return merged
+
+    def get_cache_path(self, mode: str, start_date: dt.date, end_date: dt.date) -> Path:
+        return self.cache_dir / (
+            f"{mode}_{start_date.isoformat()}_{end_date.isoformat()}.csv"
+        )
+
+    def wait_for_request_slot(self) -> None:
+        elapsed = time.time() - self._last_gdelt_request_at
+        if elapsed < self.gdelt_request_spacing:
+            time.sleep(self.gdelt_request_spacing - elapsed)
+
+    def get_retry_wait_time(
+        self,
+        retry_delay: int,
+        attempt: int,
+        response: requests.Response | None,
+    ) -> int:
+        retry_after = None
+        if response is not None:
+            retry_after = response.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            return max(int(retry_after), self.gdelt_request_spacing)
+        return max(retry_delay * (2**attempt), self.gdelt_request_spacing)
+
+    def fetch_metric_window(
+        self,
+        query: str,
+        start_date: dt.date,
+        end_date: dt.date,
+        geo: str | None,
+        mode: str,
+        value_name: str,
+        retry_delay: int,
+        max_attempts: int,
+    ) -> pd.DataFrame:
+        cache_path = self.get_cache_path(mode, start_date, end_date)
+        if cache_path.exists():
+            return pd.read_csv(cache_path, parse_dates=["Date"], index_col="Date")
+
+        try:
+            frame = self.fetch_metric_window_once(
+                query=query,
+                start_date=start_date,
+                end_date=end_date,
+                geo=geo,
+                mode=mode,
+                value_name=value_name,
+                retry_delay=retry_delay,
+                max_attempts=max_attempts,
+            )
+        except RuntimeError:
+            if (end_date - start_date).days <= 1:
+                raise
+
+            midpoint = start_date + (end_date - start_date) / 2
+            left_end = midpoint
+            right_start = midpoint + dt.timedelta(days=1)
+            print(
+                f"Splitting GDELT window for {mode}: "
+                f"{start_date} to {end_date} into "
+                f"{start_date} to {left_end} and {right_start} to {end_date}"
+            )
+            left = self.fetch_metric_window(
+                query=query,
+                start_date=start_date,
+                end_date=left_end,
+                geo=geo,
+                mode=mode,
+                value_name=value_name,
+                retry_delay=retry_delay,
+                max_attempts=max_attempts,
+            )
+            right = self.fetch_metric_window(
+                query=query,
+                start_date=right_start,
+                end_date=end_date,
+                geo=geo,
+                mode=mode,
+                value_name=value_name,
+                retry_delay=retry_delay,
+                max_attempts=max_attempts,
+            )
+            frame = pd.concat([left, right]).sort_index()
+            frame = frame[~frame.index.duplicated(keep="last")]
+
+        frame.to_csv(cache_path, index=True)
+        return frame
+
+    def fetch_metric_window_once(
+        self,
+        query: str,
+        start_date: dt.date,
+        end_date: dt.date,
+        geo: str | None,
+        mode: str,
+        value_name: str,
+        retry_delay: int,
+        max_attempts: int,
     ) -> pd.DataFrame:
         params = {
             "query": query,
@@ -137,22 +270,44 @@ class GdeltImporter(BaseImporter):
             + urllib.parse.urlencode(params)
         )
         response = None
+        last_error: Exception | None = None
 
-        for attempt in range(3):
+        for attempt in range(max_attempts):
             try:
+                self.wait_for_request_slot()
                 response = requests.get(url, timeout=30)
+                self._last_gdelt_request_at = time.time()
                 response.raise_for_status()
                 break
-            except requests.exceptions.HTTPError:
+            except requests.exceptions.HTTPError as exc:
+                last_error = exc
                 if response is not None and response.status_code == 429:
-                    wait_time = retry_delay * (2**attempt)
-                    print(f"GDELT rate limited for {mode}; waiting {wait_time}s")
+                    wait_time = self.get_retry_wait_time(
+                        retry_delay=retry_delay,
+                        attempt=attempt,
+                        response=response,
+                    )
+                    print(
+                        f"GDELT rate limited for {mode} "
+                        f"{start_date} to {end_date}; waiting {wait_time}s"
+                    )
                     time.sleep(wait_time)
                     continue
                 raise
+            except requests.exceptions.RequestException as exc:
+                last_error = exc
+                wait_time = max(retry_delay * (2**attempt), self.gdelt_request_spacing)
+                print(
+                    f"GDELT request failed for {mode} "
+                    f"{start_date} to {end_date}; waiting {wait_time}s"
+                )
+                time.sleep(wait_time)
 
         if response is None or response.status_code >= 400:
-            raise RuntimeError(f"Failed to fetch GDELT data for mode={mode}")
+            raise RuntimeError(
+                "Failed to fetch GDELT data for "
+                f"mode={mode}, start_date={start_date}, end_date={end_date}"
+            ) from last_error
 
         lines = response.text.splitlines()
         if lines and lines[0].startswith("sep="):
@@ -165,7 +320,6 @@ class GdeltImporter(BaseImporter):
         if "Series" in frame.columns:
             frame = frame.drop(columns=["Series"])
         frame = frame.rename(columns={"Value": value_name})
-        time.sleep(retry_delay)
         return frame
 
     def run(self) -> Path:
