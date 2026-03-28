@@ -12,6 +12,8 @@ dependencies:
   - pytorch
   - transformers
   - pip
+  - matplotlib
+  - seaborn
   - pip:
       - urllib3<2
       - yfinance
