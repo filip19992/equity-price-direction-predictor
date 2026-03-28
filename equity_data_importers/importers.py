@@ -7,7 +7,9 @@ import urllib.parse
 from abc import ABC, abstractmethod
 from io import StringIO
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
@@ -352,6 +354,11 @@ class GdeltImporter(BaseImporter):
 
 class RedditImporter(BaseImporter):
     name = "reddit"
+    market_timezone = ZoneInfo("America/New_York")
+    market_open_time = dt.time(9, 30)
+    finbert_model_name = "ProsusAI/finbert"
+    finbert_batch_size = 32
+    line_progress_interval = 250000
 
     def __init__(self, config: type[Config] = Config) -> None:
         super().__init__(config=config)
@@ -363,6 +370,7 @@ class RedditImporter(BaseImporter):
         self.source_path = self.data_dir / "stocks_submissions"
         self.raw_output_path = self.data_dir / "tesla_stocks_posts.parquet"
         self.daily_output_path = self.data_dir / "stock-reddit-data.csv"
+        self._finbert_components: tuple[object, object, object] | None = None
 
     def read_ndjson_plain(self, path: Path):
         if not path.exists():
@@ -381,10 +389,54 @@ class RedditImporter(BaseImporter):
     def to_utc_date(created_utc: int) -> dt.date:
         return dt.datetime.utcfromtimestamp(int(created_utc)).date()
 
+    @staticmethod
+    def sanitize_count(value: object) -> float:
+        if pd.isna(value):
+            return 0.0
+        return max(float(value), 0.0)
+
+    def get_trading_sessions(self) -> list[dt.date]:
+        history_start = self.config.START_DATE - dt.timedelta(days=10)
+        history_end = self.config.END_DATE + dt.timedelta(days=10)
+        sessions = yf.download(
+            self.config.TICKER,
+            start=str(history_start),
+            end=str(history_end),
+            progress=False,
+        )
+        if sessions.empty:
+            raise RuntimeError(
+                f"Unable to load trading sessions for {self.config.TICKER}"
+            )
+
+        return [ts.date() for ts in pd.to_datetime(sessions.index).to_pydatetime()]
+
+    def align_to_next_trading_session(
+        self,
+        created_utc: int,
+        trading_sessions: list[dt.date],
+    ) -> str | None:
+        timestamp = pd.Timestamp(created_utc, unit="s", tz="UTC").tz_convert(
+            self.market_timezone
+        )
+        local_date = timestamp.date()
+
+        for session_date in trading_sessions:
+            if session_date < local_date:
+                continue
+            if session_date == local_date and timestamp.time() < self.market_open_time:
+                return session_date.isoformat()
+            if session_date > local_date:
+                return session_date.isoformat()
+
+        return None
+
     def extract_matching_posts(self) -> pd.DataFrame:
         rows = []
         processed = 0
         matched = 0
+        source_start_date = self.config.START_DATE - dt.timedelta(days=7)
+        print(f"Scanning reddit source file: {self.source_path}")
 
         for obj in self.read_ndjson_plain(self.source_path):
             processed += 1
@@ -392,8 +444,13 @@ class RedditImporter(BaseImporter):
             if created_utc is None:
                 continue
 
+            if processed % self.line_progress_interval == 0:
+                print(
+                    f"Scanned {processed:,} lines, matched {matched:,} posts so far"
+                )
+
             current_date = self.to_utc_date(created_utc)
-            if current_date < self.config.START_DATE or current_date >= self.config.END_DATE:
+            if current_date < source_start_date or current_date > self.config.END_DATE:
                 continue
 
             title = obj.get("title") or ""
@@ -434,9 +491,122 @@ class RedditImporter(BaseImporter):
             "permalink",
             "url",
         ]
+        print(
+            f"Finished reddit scan: processed {processed:,} lines, matched {matched:,} posts"
+        )
         return pd.DataFrame(rows, columns=columns)
 
+    def load_finbert(self) -> tuple[object, object, object]:
+        if self._finbert_components is not None:
+            return self._finbert_components
+
+        try:
+            import torch
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        except (ImportError, OSError) as exc:
+            raise RuntimeError(
+                "FinBERT scoring requires a working 'torch' and 'transformers' setup."
+            ) from exc
+
+        tokenizer = AutoTokenizer.from_pretrained(self.finbert_model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            self.finbert_model_name
+        )
+        model.eval()
+        self._finbert_components = (torch, tokenizer, model)
+        return self._finbert_components
+
+    def score_finbert(self, texts: pd.Series) -> pd.Series:
+        torch, tokenizer, model = self.load_finbert()
+        values: list[float] = []
+        total_batches = (len(texts) + self.finbert_batch_size - 1) // self.finbert_batch_size
+        print(
+            f"Scoring FinBERT sentiment for {len(texts):,} posts "
+            f"in {total_batches:,} batches"
+        )
+
+        for batch_index, start in enumerate(
+            range(0, len(texts), self.finbert_batch_size),
+            start=1,
+        ):
+            batch = texts.iloc[start : start + self.finbert_batch_size].tolist()
+            encoded = tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            )
+            with torch.no_grad():
+                logits = model(**encoded).logits
+                probabilities = torch.softmax(logits, dim=1).cpu().numpy()
+
+            labels = [model.config.id2label[i].lower() for i in range(probabilities.shape[1])]
+            label_to_index = {label: idx for idx, label in enumerate(labels)}
+            positive_idx = label_to_index.get("positive")
+            negative_idx = label_to_index.get("negative")
+
+            if positive_idx is None or negative_idx is None:
+                raise RuntimeError(
+                    f"Unexpected FinBERT labels: {model.config.id2label}"
+                )
+
+            values.extend(
+                (
+                    probabilities[:, positive_idx] - probabilities[:, negative_idx]
+                ).tolist()
+            )
+
+            print(f"FinBERT progress: batch {batch_index:,}/{total_batches:,}")
+
+        return pd.Series(values, index=texts.index, dtype="float64")
+
+    def enrich_posts(self, frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty:
+            return frame.copy()
+
+        trading_sessions = self.get_trading_sessions()
+        working = frame.copy()
+        print(f"Aligning {len(working):,} matched posts to trading sessions")
+        working["aligned_date"] = working["created_utc"].map(
+            lambda created_utc: self.align_to_next_trading_session(
+                created_utc=created_utc,
+                trading_sessions=trading_sessions,
+            )
+        )
+        working = working[working["aligned_date"].notna()].copy()
+        working["aligned_date"] = working["aligned_date"].astype(str)
+        working["text"] = working["title"].fillna("") + "\n" + working["selftext"].fillna("")
+        print(f"Posts remaining after session alignment: {len(working):,}")
+
+        analyzer = SentimentIntensityAnalyzer()
+        print("Scoring VADER sentiment")
+        working["vader_sentiment"] = working["text"].map(
+            lambda text: analyzer.polarity_scores(text)["compound"]
+        )
+        try:
+            working["finbert_sentiment"] = self.score_finbert(working["text"])
+        except Exception as exc:
+            if self.config.FINBERT_REQUIRED:
+                raise
+            print(f"FinBERT unavailable, continuing with VADER only: {exc}")
+            working["finbert_sentiment"] = np.nan
+
+        score_weight = working["score"].map(self.sanitize_count).map(np.log1p)
+        comments_weight = working["num_comments"].map(self.sanitize_count).map(np.log1p)
+        # Keep an equal base weight so zero-engagement posts still contribute tone.
+        working["engagement_weight"] = 1.0 + score_weight + comments_weight
+        working["vader_weighted_sentiment"] = (
+            working["vader_sentiment"] * working["engagement_weight"]
+        )
+        working["finbert_weighted_sentiment"] = (
+            working["finbert_sentiment"] * working["engagement_weight"]
+        )
+
+        return working
+
     def aggregate_daily_metrics(self, frame: pd.DataFrame) -> pd.DataFrame:
+        print("Aggregating daily reddit metrics")
         calendar = pd.DataFrame(
             {
                 "date": pd.date_range(
@@ -451,40 +621,70 @@ class RedditImporter(BaseImporter):
             calendar["reddit_posts"] = 0
             calendar["reddit_sent_mean"] = pd.NA
             calendar["reddit_sent_sum"] = 0.0
+            calendar["reddit_sent_std"] = pd.NA
+            calendar["reddit_weight_sum"] = 0.0
             calendar["reddit_score_sum"] = 0.0
             calendar["reddit_comments_sum"] = 0.0
+            calendar["reddit_vader_mean"] = pd.NA
+            calendar["reddit_vader_weighted_mean"] = pd.NA
+            calendar["reddit_vader_sum"] = 0.0
+            calendar["reddit_vader_std"] = pd.NA
+            calendar["reddit_finbert_mean"] = pd.NA
+            calendar["reddit_finbert_weighted_mean"] = pd.NA
+            calendar["reddit_finbert_sum"] = 0.0
+            calendar["reddit_finbert_std"] = pd.NA
             return calendar
 
         working = frame.copy()
-        working["date"] = pd.to_datetime(working["date_utc"]).dt.strftime("%Y-%m-%d")
-        working["text"] = working["title"].fillna("") + "\n" + working["selftext"].fillna("")
-
-        analyzer = SentimentIntensityAnalyzer()
-        working["sentiment"] = working["text"].map(
-            lambda text: analyzer.polarity_scores(text)["compound"]
-        )
+        working["date"] = working["aligned_date"]
 
         daily = working.groupby("date", as_index=False).agg(
             reddit_posts=("id", "count"),
-            reddit_sent_mean=("sentiment", "mean"),
-            reddit_sent_sum=("sentiment", "sum"),
+            reddit_weight_sum=("engagement_weight", "sum"),
             reddit_score_sum=("score", "sum"),
             reddit_comments_sum=("num_comments", "sum"),
+            reddit_vader_mean=("vader_sentiment", "mean"),
+            reddit_vader_sum=("vader_sentiment", "sum"),
+            reddit_vader_std=("vader_sentiment", "std"),
+            reddit_vader_weighted_sum=("vader_weighted_sentiment", "sum"),
+            reddit_finbert_mean=("finbert_sentiment", "mean"),
+            reddit_finbert_sum=("finbert_sentiment", "sum"),
+            reddit_finbert_std=("finbert_sentiment", "std"),
+            reddit_finbert_weighted_sum=("finbert_weighted_sentiment", "sum"),
         )
+        daily["reddit_vader_weighted_mean"] = (
+            daily["reddit_vader_weighted_sum"] / daily["reddit_weight_sum"]
+        )
+        daily["reddit_finbert_weighted_mean"] = (
+            daily["reddit_finbert_weighted_sum"] / daily["reddit_weight_sum"]
+        )
+        daily["reddit_sent_mean"] = daily["reddit_vader_mean"]
+        daily["reddit_sent_sum"] = daily["reddit_vader_sum"]
+        daily["reddit_sent_std"] = daily["reddit_vader_std"]
 
         daily_full = calendar.merge(daily, on="date", how="left")
         daily_full["reddit_posts"] = daily_full["reddit_posts"].fillna(0).astype(int)
+        daily_full["reddit_weight_sum"] = daily_full["reddit_weight_sum"].fillna(0)
         daily_full["reddit_score_sum"] = daily_full["reddit_score_sum"].fillna(0)
         daily_full["reddit_comments_sum"] = daily_full["reddit_comments_sum"].fillna(0)
         daily_full["reddit_sent_sum"] = daily_full["reddit_sent_sum"].fillna(0)
+        daily_full["reddit_vader_sum"] = daily_full["reddit_vader_sum"].fillna(0)
+        daily_full["reddit_finbert_sum"] = daily_full["reddit_finbert_sum"].fillna(0)
+        daily_full = daily_full.drop(
+            columns=["reddit_vader_weighted_sum", "reddit_finbert_weighted_sum"],
+            errors="ignore",
+        )
         return daily_full
 
     def run(self) -> tuple[Path, Path]:
         posts = self.extract_matching_posts()
+        posts = self.enrich_posts(posts)
+        print(f"Writing {len(posts):,} matched reddit posts to {self.raw_output_path}")
         posts.to_parquet(self.raw_output_path, index=False)
         print(f"Saved reddit post matches to {self.raw_output_path}")
 
         daily = self.aggregate_daily_metrics(posts)
+        print(f"Writing {len(daily):,} daily reddit rows to {self.daily_output_path}")
         daily.to_csv(self.daily_output_path, index=False)
         print(f"Saved reddit daily aggregates to {self.daily_output_path}")
         return self.raw_output_path, self.daily_output_path

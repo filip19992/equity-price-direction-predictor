@@ -9,6 +9,8 @@ dependencies:
   - scikit-learn
   - requests
   - zstandard
+  - pytorch
+  - transformers
   - pip
   - pip:
       - urllib3<2

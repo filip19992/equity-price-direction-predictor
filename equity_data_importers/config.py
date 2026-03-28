@@ -9,3 +9,4 @@ class Config:
     GEO: str = "US"
     START_DATE: dt.date = dt.date(2023, 1, 1)
     END_DATE: dt.date = dt.date(2025, 12, 31)
+    FINBERT_REQUIRED: bool = True
