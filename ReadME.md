@@ -5,6 +5,7 @@
 
 # Import data
 1. python -m equity_data_importers.run_all
+2. To run only reddit comments importer: `python -m equity_data_importers.run_all reddit_comments`
 
 # Notes
 1. The reddit importer now compares VADER and FinBERT sentiment. The first FinBERT run may download the model weights into the local Hugging Face cache.

@@ -3,6 +3,7 @@ import argparse
 from equity_data_importers.importers import (
     GdeltImporter,
     GoogleTrendsImporter,
+    RedditCommentsImporter,
     RedditImporter,
     StockPriceImporter,
 )
@@ -11,12 +12,15 @@ IMPORTERS = {
     "google_trends": GoogleTrendsImporter,
     "gdelt": GdeltImporter,
     "reddit": RedditImporter,
+    "reddit_comments": RedditCommentsImporter,
     "stock_price": StockPriceImporter,
 }
 
+DEFAULT_IMPORTERS = ["google_trends", "gdelt", "reddit", "stock_price"]
+
 
 def run_importers(selected: list[str] | None = None) -> dict[str, object]:
-    importer_names = selected or list(IMPORTERS.keys())
+    importer_names = selected or DEFAULT_IMPORTERS
     importers = [IMPORTERS[name]() for name in importer_names]
     results: dict[str, object] = {}
 

@@ -690,6 +690,83 @@ class RedditImporter(BaseImporter):
         return self.raw_output_path, self.daily_output_path
 
 
+class RedditCommentsImporter(RedditImporter):
+    name = "reddit_comments"
+
+    def __init__(self, config: type[Config] = Config) -> None:
+        super().__init__(config=config)
+        self.source_path = self.data_dir / "stocks_comments"
+        self.raw_output_path = self.data_dir / "tesla_stocks_comments.parquet"
+        self.daily_output_path = self.data_dir / "stock-reddit-comments-data.csv"
+
+    def extract_matching_posts(self) -> pd.DataFrame:
+        rows = []
+        processed = 0
+        matched = 0
+        source_start_date = self.config.START_DATE - dt.timedelta(days=7)
+        print(f"Scanning reddit comments source file: {self.source_path}")
+
+        for obj in self.read_ndjson_plain(self.source_path):
+            processed += 1
+            created_utc = obj.get("created_utc")
+            if created_utc is None:
+                continue
+
+            if processed % self.line_progress_interval == 0:
+                print(
+                    f"Scanned {processed:,} lines, matched {matched:,} comments so far"
+                )
+
+            current_date = self.to_utc_date(created_utc)
+            if current_date < source_start_date or current_date > self.config.END_DATE:
+                continue
+
+            body = obj.get("body") or ""
+            if not isinstance(body, str):
+                body = str(body)
+
+            if not self.keyword_pattern.search(body):
+                continue
+
+            matched += 1
+            rows.append(
+                {
+                    "id": obj.get("id"),
+                    "date_utc": current_date.isoformat(),
+                    "created_utc": int(created_utc),
+                    "subreddit": obj.get("subreddit"),
+                    "title": "",
+                    "selftext": body,
+                    "score": obj.get("score"),
+                    # Comments dump does not expose nested reply counts per comment.
+                    "num_comments": 0,
+                    "permalink": obj.get("permalink"),
+                    "url": pd.NA,
+                }
+            )
+
+            if matched % 50000 == 0:
+                print(f"Matched {matched:,} reddit comments after {processed:,} lines")
+
+        columns = [
+            "id",
+            "date_utc",
+            "created_utc",
+            "subreddit",
+            "title",
+            "selftext",
+            "score",
+            "num_comments",
+            "permalink",
+            "url",
+        ]
+        print(
+            f"Finished reddit comments scan: processed {processed:,} lines, "
+            f"matched {matched:,} comments"
+        )
+        return pd.DataFrame(rows, columns=columns)
+
+
 class StockPriceImporter(BaseImporter):
     name = "stock_price"
 

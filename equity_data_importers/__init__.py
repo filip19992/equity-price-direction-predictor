@@ -3,6 +3,7 @@ from .importers import (
     BaseImporter,
     GdeltImporter,
     GoogleTrendsImporter,
+    RedditCommentsImporter,
     RedditImporter,
     StockPriceImporter,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "Config",
     "GdeltImporter",
     "GoogleTrendsImporter",
+    "RedditCommentsImporter",
     "RedditImporter",
     "StockPriceImporter",
 ]
