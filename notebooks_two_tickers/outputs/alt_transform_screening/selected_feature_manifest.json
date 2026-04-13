@@ -1,0 +1,91 @@
+{
+  "selection_thresholds": {
+    "min_non_null_ratio": 0.6,
+    "min_train_rows": 160,
+    "min_fold_count": 3,
+    "min_train_auc": 0.53,
+    "min_fold_mean_auc": 0.53,
+    "min_fold_hit_rate": 0.75,
+    "train_auc_pvalue_threshold": 0.1,
+    "fallback_min_fold_mean_auc": 0.515,
+    "max_selected_per_source": 2,
+    "max_selected_total": 8,
+    "corr_prune_threshold": 0.9
+  },
+  "tickers": {
+    "AAPL": {
+      "price_only_features": [
+        "ret_1d",
+        "ret_2d",
+        "ret_5d",
+        "ret_10d",
+        "volume_change_1d",
+        "volume_change_5d",
+        "realized_vol_5d",
+        "realized_vol_10d",
+        "price_vs_sma_5d",
+        "price_vs_sma_10d",
+        "volume_z20",
+        "volume_vs_sma_20d",
+        "weekday_sin",
+        "weekday_cos"
+      ],
+      "selected_alt_features": [
+        "reddit_sentiment__gap__delta1",
+        "reddit_sentiment__vader__delta1",
+        "gdelt__sentiment__surprise20",
+        "reddit_attention__posts_total_log__lag2"
+      ],
+      "selected_by_source": {
+        "reddit_sentiment": [
+          "reddit_sentiment__gap__delta1",
+          "reddit_sentiment__vader__delta1"
+        ],
+        "gdelt": [
+          "gdelt__sentiment__surprise20"
+        ],
+        "reddit_attention": [
+          "reddit_attention__posts_total_log__lag2"
+        ]
+      }
+    },
+    "TSLA": {
+      "price_only_features": [
+        "ret_1d",
+        "ret_2d",
+        "ret_5d",
+        "ret_10d",
+        "volume_change_1d",
+        "volume_change_5d",
+        "realized_vol_5d",
+        "realized_vol_10d",
+        "price_vs_sma_5d",
+        "price_vs_sma_10d",
+        "volume_z20",
+        "volume_vs_sma_20d",
+        "weekday_sin",
+        "weekday_cos"
+      ],
+      "selected_alt_features": [
+        "reddit_sentiment__vader__surprise20",
+        "google_trends__level__gap_roll5",
+        "reddit_attention__comments_total_log__spike20",
+        "gdelt__articles_log__lag2"
+      ],
+      "selected_by_source": {
+        "reddit_sentiment": [
+          "reddit_sentiment__vader__surprise20"
+        ],
+        "google_trends": [
+          "google_trends__level__gap_roll5"
+        ],
+        "reddit_attention": [
+          "reddit_attention__comments_total_log__spike20"
+        ],
+        "gdelt": [
+          "gdelt__articles_log__lag2"
+        ]
+      }
+    }
+  }
+}
