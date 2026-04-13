@@ -23,10 +23,24 @@ from equity_data_importers.config import Config
 class BaseImporter(ABC):
     name = "base"
 
-    def __init__(self, config: type[Config] = Config) -> None:
-        self.config = config
+    def __init__(self, config: Config | type[Config] = Config) -> None:
+        if isinstance(config, Config):
+            self.config = config
+        elif isinstance(config, type) and issubclass(config, Config):
+            self.config = config()
+        else:
+            raise TypeError("`config` must be Config instance or Config class.")
+
         self.data_dir = Path(__file__).resolve().parent.parent / "data" / "equity_data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def output_path(self, legacy_name: str, generic_stem: str | None = None) -> Path:
+        if self.config.is_legacy_default_profile():
+            return self.data_dir / legacy_name
+
+        legacy_path = Path(legacy_name)
+        stem = generic_stem if generic_stem else legacy_path.stem
+        return self.data_dir / f"{stem}_{self.config.resolved_output_tag}{legacy_path.suffix}"
 
     @abstractmethod
     def run(self) -> Path | tuple[Path, ...]:
@@ -35,6 +49,11 @@ class BaseImporter(ABC):
 
 class GoogleTrendsImporter(BaseImporter):
     name = "google_trends"
+
+    @staticmethod
+    def is_retry_compat_error(exc: Exception) -> bool:
+        text = str(exc)
+        return "Retry.__init__()" in text and "method_whitelist" in text
 
     def fetch_google_trends(
         self,
@@ -78,6 +97,12 @@ class GoogleTrendsImporter(BaseImporter):
                     collected.append(frame)
                     print(f"Google Trends {timeframe}: {len(frame)} rows")
             except Exception as exc:
+                if self.is_retry_compat_error(exc):
+                    raise RuntimeError(
+                        "Google Trends dependency mismatch: pytrends is incompatible with "
+                        "the installed urllib3. In your active conda env run: "
+                        "pip install \"urllib3<2\" and retry."
+                    ) from exc
                 print(f"Google Trends error for {timeframe}: {exc}")
 
             current_start = current_end + dt.timedelta(days=1)
@@ -99,13 +124,16 @@ class GoogleTrendsImporter(BaseImporter):
 
     def run(self) -> Path:
         frame = self.fetch_google_trends(
-            query=self.config.COMPANY_NAME,
+            query=self.config.resolved_trends_query,
             start_date=self.config.START_DATE,
             end_date=self.config.END_DATE,
             geo=self.config.GEO,
             window_days=200,
         )
-        output_path = self.data_dir / "google_trends_data.csv"
+        output_path = self.output_path(
+            legacy_name="google_trends_data.csv",
+            generic_stem="google_trends_data",
+        )
         frame.to_csv(output_path, index=True)
         print(f"Saved Google Trends data to {output_path}")
         return output_path
@@ -114,11 +142,15 @@ class GoogleTrendsImporter(BaseImporter):
 class GdeltImporter(BaseImporter):
     name = "gdelt"
 
-    def __init__(self, config: type[Config] = Config) -> None:
+    def __init__(self, config: Config | type[Config] = Config) -> None:
         super().__init__(config=config)
         self.gdelt_request_spacing = 15
         self._last_gdelt_request_at = 0.0
-        self.cache_dir = self.data_dir / "gdelt_cache"
+        cache_root = self.data_dir / "gdelt_cache"
+        if self.config.is_legacy_default_profile():
+            self.cache_dir = cache_root
+        else:
+            self.cache_dir = cache_root / self.config.resolved_output_tag
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def fetch_metric(
@@ -326,7 +358,7 @@ class GdeltImporter(BaseImporter):
 
     def run(self) -> Path:
         volume = self.fetch_metric(
-            query=self.config.GDELT_QUERY,
+            query=self.config.resolved_gdelt_query,
             start_date=self.config.START_DATE,
             end_date=self.config.END_DATE,
             geo=self.config.GEO,
@@ -334,7 +366,7 @@ class GdeltImporter(BaseImporter):
             value_name="gdelt_articles",
         )
         tone = self.fetch_metric(
-            query=self.config.GDELT_QUERY,
+            query=self.config.resolved_gdelt_query,
             start_date=self.config.START_DATE,
             end_date=self.config.END_DATE,
             geo=self.config.GEO,
@@ -346,7 +378,7 @@ class GdeltImporter(BaseImporter):
         volume["gdelt_robust"] = scaler.fit_transform(volume[["gdelt_articles"]])
         merged = volume.join(tone, how="left")
 
-        output_path = self.data_dir / "gdelt_data.csv"
+        output_path = self.output_path(legacy_name="gdelt_data.csv", generic_stem="gdelt_data")
         merged.to_csv(output_path, index=True)
         print(f"Saved GDELT data to {output_path}")
         return output_path
@@ -360,16 +392,22 @@ class RedditImporter(BaseImporter):
     finbert_batch_size = 32
     line_progress_interval = 250000
 
-    def __init__(self, config: type[Config] = Config) -> None:
+    def __init__(self, config: Config | type[Config] = Config) -> None:
         super().__init__(config=config)
         pattern = (
             rf"(?i)\b({re.escape(self.config.TICKER)}|\${re.escape(self.config.TICKER)}|"
             rf"{re.escape(self.config.COMPANY_NAME)})\b"
         )
         self.keyword_pattern = re.compile(pattern)
-        self.source_path = self.data_dir / "stocks_submissions"
-        self.raw_output_path = self.data_dir / "tesla_stocks_posts.parquet"
-        self.daily_output_path = self.data_dir / "stock-reddit-data.csv"
+        self.source_path = self.data_dir / self.config.REDDIT_SUBMISSIONS_SOURCE
+        self.raw_output_path = self.output_path(
+            legacy_name="tesla_stocks_posts.parquet",
+            generic_stem="stocks_posts",
+        )
+        self.daily_output_path = self.output_path(
+            legacy_name="stock-reddit-data.csv",
+            generic_stem="stock-reddit-data",
+        )
         self._finbert_components: tuple[object, object, object] | None = None
 
     def read_ndjson_plain(self, path: Path):
@@ -693,11 +731,17 @@ class RedditImporter(BaseImporter):
 class RedditCommentsImporter(RedditImporter):
     name = "reddit_comments"
 
-    def __init__(self, config: type[Config] = Config) -> None:
+    def __init__(self, config: Config | type[Config] = Config) -> None:
         super().__init__(config=config)
-        self.source_path = self.data_dir / "stocks_comments"
-        self.raw_output_path = self.data_dir / "tesla_stocks_comments.parquet"
-        self.daily_output_path = self.data_dir / "stock-reddit-comments-data.csv"
+        self.source_path = self.data_dir / self.config.REDDIT_COMMENTS_SOURCE
+        self.raw_output_path = self.output_path(
+            legacy_name="tesla_stocks_comments.parquet",
+            generic_stem="stocks_comments",
+        )
+        self.daily_output_path = self.output_path(
+            legacy_name="stock-reddit-comments-data.csv",
+            generic_stem="stock-reddit-comments-data",
+        )
 
     def extract_matching_posts(self) -> pd.DataFrame:
         rows = []
@@ -786,7 +830,10 @@ class StockPriceImporter(BaseImporter):
         stock_frame = raw[["Close", "Volume"]].copy()
         stock_frame.columns = ["stock_price", "stock_volume"]
 
-        output_path = self.data_dir / "stock-prices-data.csv"
+        output_path = self.output_path(
+            legacy_name="stock-prices-data.csv",
+            generic_stem="stock-prices-data",
+        )
         stock_frame.to_csv(output_path, index=True)
         print(f"Saved stock price data to {output_path}")
         return output_path

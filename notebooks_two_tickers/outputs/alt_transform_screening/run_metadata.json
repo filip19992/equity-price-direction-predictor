@@ -1,0 +1,37 @@
+{
+  "dataset_path": "C:\\Users\\user\\OneDrive\\Documents\\magisterka\\praca magisterska\\code\\notebooks_two_tickers\\outputs\\datasets\\stock_direction_two_tickers_base.csv",
+  "tickers": [
+    "TSLA",
+    "AAPL"
+  ],
+  "price_only_feature_count": 14,
+  "candidate_feature_count": 132,
+  "selection_method": "Features are ranked on train-only statistics and walk-forward validation AUC, then pruned for redundancy before final-model training.",
+  "time_alignment": "All alternative series are shifted by one trading day before transforms.",
+  "transform_set": [
+    "level(t-1)",
+    "lag2(t-2)",
+    "lag3(t-3)",
+    "roll3",
+    "roll5",
+    "delta1",
+    "delta2",
+    "gap_roll3",
+    "gap_roll5",
+    "surprise20",
+    "spike20"
+  ],
+  "selection_thresholds": {
+    "min_non_null_ratio": 0.6,
+    "min_train_rows": 160,
+    "min_fold_count": 3,
+    "min_train_auc": 0.53,
+    "min_fold_mean_auc": 0.53,
+    "min_fold_hit_rate": 0.75,
+    "train_auc_pvalue_threshold": 0.1,
+    "fallback_min_fold_mean_auc": 0.515,
+    "max_selected_per_source": 2,
+    "max_selected_total": 8,
+    "corr_prune_threshold": 0.9
+  }
+}

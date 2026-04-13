@@ -1,0 +1,78 @@
+{
+  "TSLA": {
+    "price_only": [
+      "ret_1d",
+      "ret_2d",
+      "ret_5d",
+      "ret_10d",
+      "volume_change_1d",
+      "volume_change_5d",
+      "realized_vol_5d",
+      "realized_vol_10d",
+      "price_vs_sma_5d",
+      "price_vs_sma_10d",
+      "volume_z20",
+      "volume_vs_sma_20d",
+      "weekday_sin",
+      "weekday_cos"
+    ],
+    "price_plus_selected_alt": [
+      "ret_1d",
+      "ret_2d",
+      "ret_5d",
+      "ret_10d",
+      "volume_change_1d",
+      "volume_change_5d",
+      "realized_vol_5d",
+      "realized_vol_10d",
+      "price_vs_sma_5d",
+      "price_vs_sma_10d",
+      "volume_z20",
+      "volume_vs_sma_20d",
+      "weekday_sin",
+      "weekday_cos",
+      "reddit_sentiment__vader__surprise20",
+      "google_trends__level__gap_roll5",
+      "reddit_attention__comments_total_log__spike20",
+      "gdelt__articles_log__lag2"
+    ]
+  },
+  "AAPL": {
+    "price_only": [
+      "ret_1d",
+      "ret_2d",
+      "ret_5d",
+      "ret_10d",
+      "volume_change_1d",
+      "volume_change_5d",
+      "realized_vol_5d",
+      "realized_vol_10d",
+      "price_vs_sma_5d",
+      "price_vs_sma_10d",
+      "volume_z20",
+      "volume_vs_sma_20d",
+      "weekday_sin",
+      "weekday_cos"
+    ],
+    "price_plus_selected_alt": [
+      "ret_1d",
+      "ret_2d",
+      "ret_5d",
+      "ret_10d",
+      "volume_change_1d",
+      "volume_change_5d",
+      "realized_vol_5d",
+      "realized_vol_10d",
+      "price_vs_sma_5d",
+      "price_vs_sma_10d",
+      "volume_z20",
+      "volume_vs_sma_20d",
+      "weekday_sin",
+      "weekday_cos",
+      "reddit_sentiment__gap__delta1",
+      "reddit_sentiment__vader__delta1",
+      "gdelt__sentiment__surprise20",
+      "reddit_attention__posts_total_log__lag2"
+    ]
+  }
+}
