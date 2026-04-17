@@ -49,11 +49,123 @@ class BaseImporter(ABC):
 
 class GoogleTrendsImporter(BaseImporter):
     name = "google_trends"
+    min_request_spacing_seconds = 20
+    inter_window_wait_range_seconds = (75, 120)
+    rate_limit_cooldown_range_seconds = (240, 360)
+    max_window_attempts = 4
+    _last_request_at = 0.0
+
+    def __init__(self, config: Config | type[Config] = Config) -> None:
+        super().__init__(config=config)
+        cache_root = self.data_dir / "google_trends_cache"
+        if self.config.is_legacy_default_profile():
+            self.cache_dir = cache_root
+        else:
+            self.cache_dir = cache_root / self.config.resolved_output_tag
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def is_retry_compat_error(exc: Exception) -> bool:
         text = str(exc)
         return "Retry.__init__()" in text and "method_whitelist" in text
+
+    @staticmethod
+    def is_rate_limited_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "429" in text or "too many requests" in text or "rate limit" in text
+
+    @classmethod
+    def wait_for_request_slot(cls) -> None:
+        elapsed = time.time() - cls._last_request_at
+        if elapsed < cls.min_request_spacing_seconds:
+            time.sleep(cls.min_request_spacing_seconds - elapsed)
+
+    @classmethod
+    def mark_request(cls) -> None:
+        cls._last_request_at = time.time()
+
+    @classmethod
+    def wait_after_rate_limit(cls, attempt: int) -> None:
+        base_wait = random.randint(*cls.rate_limit_cooldown_range_seconds)
+        wait_seconds = base_wait + (attempt * 60)
+        print(f"Google Trends rate limited; cooling down for {wait_seconds}s")
+        time.sleep(wait_seconds)
+
+    def get_cache_path(self, start_date: dt.date, end_date: dt.date) -> Path:
+        return self.cache_dir / f"{start_date.isoformat()}_{end_date.isoformat()}.csv"
+
+    def build_empty_window_frame(
+        self,
+        start_date: dt.date,
+        end_date: dt.date,
+    ) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"trends_score": pd.Series(dtype="float64")},
+            index=pd.date_range(start_date, end_date, freq="D", name="date"),
+        )
+
+    def fetch_google_trends_window(
+        self,
+        *,
+        query: str,
+        timeframe: str,
+        geo: str | None,
+        start_date: dt.date,
+        end_date: dt.date,
+        user_agents: list[str],
+    ) -> pd.DataFrame:
+        cache_path = self.get_cache_path(start_date, end_date)
+        if cache_path.exists():
+            print(f"Using cached Google Trends window: {timeframe}")
+            return pd.read_csv(cache_path, index_col=0, parse_dates=True)
+
+        for attempt in range(1, self.max_window_attempts + 1):
+            try:
+                self.wait_for_request_slot()
+                headers = {"User-Agent": random.choice(user_agents)}
+                trends = TrendReq(
+                    hl="en-US",
+                    tz=360,
+                    retries=3,
+                    backoff_factor=0.5,
+                    requests_args={"headers": headers},
+                )
+                trends.build_payload([query], timeframe=timeframe, geo=geo)
+                frame = trends.interest_over_time().drop(
+                    columns="isPartial", errors="ignore"
+                )
+                self.mark_request()
+
+                if frame.empty:
+                    print(f"No Google Trends data for {timeframe}")
+                    frame = self.build_empty_window_frame(start_date, end_date)
+                else:
+                    frame = frame.rename(columns={query: "trends_score"})
+                    frame = frame[["trends_score"]]
+                    print(f"Google Trends {timeframe}: {len(frame)} rows")
+
+                frame.to_csv(cache_path, index=True)
+                return frame
+            except Exception as exc:
+                self.mark_request()
+                if self.is_retry_compat_error(exc):
+                    raise RuntimeError(
+                        "Google Trends dependency mismatch: pytrends is incompatible with "
+                        "the installed urllib3. In your active conda env run: "
+                        "pip install \"urllib3<2\" and retry."
+                    ) from exc
+                if self.is_rate_limited_error(exc) and attempt < self.max_window_attempts:
+                    print(
+                        f"Google Trends 429 for {timeframe} "
+                        f"(attempt {attempt}/{self.max_window_attempts}): {exc}"
+                    )
+                    self.wait_after_rate_limit(attempt)
+                    continue
+                raise RuntimeError(
+                    f"Failed to fetch Google Trends window {timeframe}"
+                ) from exc
+
+        raise RuntimeError(f"Failed to fetch Google Trends window {timeframe}")
 
     def fetch_google_trends(
         self,
@@ -76,38 +188,19 @@ class GoogleTrendsImporter(BaseImporter):
         while current_start <= end_date:
             current_end = min(current_start + delta, end_date)
             timeframe = f"{current_start:%Y-%m-%d} {current_end:%Y-%m-%d}"
-
-            try:
-                headers = {"User-Agent": random.choice(user_agents)}
-                trends = TrendReq(
-                    hl="en-US",
-                    tz=360,
-                    retries=3,
-                    backoff_factor=0.5,
-                    requests_args={"headers": headers},
-                )
-                trends.build_payload([query], timeframe=timeframe, geo=geo)
-                frame = trends.interest_over_time().drop(
-                    columns="isPartial", errors="ignore"
-                )
-
-                if frame.empty:
-                    print(f"No Google Trends data for {timeframe}")
-                else:
-                    collected.append(frame)
-                    print(f"Google Trends {timeframe}: {len(frame)} rows")
-            except Exception as exc:
-                if self.is_retry_compat_error(exc):
-                    raise RuntimeError(
-                        "Google Trends dependency mismatch: pytrends is incompatible with "
-                        "the installed urllib3. In your active conda env run: "
-                        "pip install \"urllib3<2\" and retry."
-                    ) from exc
-                print(f"Google Trends error for {timeframe}: {exc}")
+            frame = self.fetch_google_trends_window(
+                query=query,
+                timeframe=timeframe,
+                geo=geo,
+                start_date=current_start,
+                end_date=current_end,
+                user_agents=user_agents,
+            )
+            collected.append(frame)
 
             current_start = current_end + dt.timedelta(days=1)
             if current_start <= end_date:
-                wait_seconds = random.randint(60, 90)
+                wait_seconds = random.randint(*self.inter_window_wait_range_seconds)
                 print(f"Waiting {wait_seconds}s before the next Trends request")
                 time.sleep(wait_seconds)
 
@@ -119,7 +212,6 @@ class GoogleTrendsImporter(BaseImporter):
 
         full = pd.concat(collected).sort_index()
         full = full[~full.index.duplicated()]
-        full = full.rename(columns={query: "trends_score"})
         return full[["trends_score"]]
 
     def run(self) -> Path:
@@ -312,7 +404,14 @@ class GdeltImporter(BaseImporter):
                 response = requests.get(url, timeout=30)
                 self._last_gdelt_request_at = time.time()
                 response.raise_for_status()
-                break
+                frame = self.parse_metric_response(
+                    payload=response.text,
+                    value_name=value_name,
+                    start_date=start_date,
+                    end_date=end_date,
+                    mode=mode,
+                )
+                return frame
             except requests.exceptions.HTTPError as exc:
                 last_error = exc
                 if response is not None and response.status_code == 429:
@@ -336,6 +435,14 @@ class GdeltImporter(BaseImporter):
                     f"{start_date} to {end_date}; waiting {wait_time}s"
                 )
                 time.sleep(wait_time)
+            except ValueError as exc:
+                last_error = exc
+                wait_time = max(retry_delay * (2**attempt), self.gdelt_request_spacing)
+                print(
+                    f"GDELT returned an unexpected payload for {mode} "
+                    f"{start_date} to {end_date}; waiting {wait_time}s"
+                )
+                time.sleep(wait_time)
 
         if response is None or response.status_code >= 400:
             raise RuntimeError(
@@ -343,18 +450,60 @@ class GdeltImporter(BaseImporter):
                 f"mode={mode}, start_date={start_date}, end_date={end_date}"
             ) from last_error
 
-        lines = response.text.splitlines()
+        raise RuntimeError(
+            "Failed to parse GDELT data for "
+            f"mode={mode}, start_date={start_date}, end_date={end_date}"
+        ) from last_error
+
+    def parse_metric_response(
+        self,
+        payload: str,
+        value_name: str,
+        start_date: dt.date,
+        end_date: dt.date,
+        mode: str,
+    ) -> pd.DataFrame:
+        lines = payload.splitlines()
         if lines and lines[0].startswith("sep="):
             lines = lines[1:]
-        cleaned = "\n".join(lines)
+        cleaned = "\n".join(lines).lstrip("\ufeff")
 
-        frame = pd.read_csv(
-            StringIO(cleaned), header=0, parse_dates=["Date"], index_col="Date"
-        )
+        if not cleaned.strip():
+            raise ValueError(
+                "Unexpected empty GDELT payload "
+                f"for mode={mode}, start_date={start_date}, end_date={end_date}."
+            )
+
+        try:
+            frame = pd.read_csv(StringIO(cleaned), header=0)
+        except pd.errors.EmptyDataError:
+            raise ValueError(
+                "Unexpected empty parsed GDELT payload "
+                f"for mode={mode}, start_date={start_date}, end_date={end_date}."
+            ) from None
+        if frame.empty:
+            return self.empty_metric_frame(value_name)
+        if "Date" not in frame.columns:
+            snippet = cleaned[:200].replace("\n", " ")
+            raise ValueError(
+                "Unexpected GDELT response schema "
+                f"for mode={mode}, start_date={start_date}, end_date={end_date}. "
+                f"Missing 'Date' column. Payload starts with: {snippet}"
+            )
+
+        frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+        frame = frame.dropna(subset=["Date"]).set_index("Date")
         if "Series" in frame.columns:
             frame = frame.drop(columns=["Series"])
         frame = frame.rename(columns={"Value": value_name})
+        if value_name not in frame.columns:
+            frame[value_name] = pd.Series(dtype=float)
         return frame
+
+    @staticmethod
+    def empty_metric_frame(value_name: str) -> pd.DataFrame:
+        empty_index = pd.DatetimeIndex([], name="Date")
+        return pd.DataFrame(index=empty_index, columns=[value_name], dtype=float)
 
     def run(self) -> Path:
         volume = self.fetch_metric(
@@ -374,9 +523,34 @@ class GdeltImporter(BaseImporter):
             value_name="sentiment_score",
         )
 
-        scaler = RobustScaler()
-        volume["gdelt_robust"] = scaler.fit_transform(volume[["gdelt_articles"]])
+        if volume.empty and tone.empty:
+            raise RuntimeError(
+                "GDELT returned an empty final dataset for "
+                f"ticker={self.config.TICKER}, query={self.config.resolved_gdelt_query!r}. "
+                "This usually indicates a weak or invalid GDELT query and should be reviewed "
+                "before continuing."
+            )
+
+        if volume.empty:
+            base_index = tone.index.copy() if not tone.empty else pd.DatetimeIndex([], name="Date")
+            volume = pd.DataFrame(index=base_index)
+            volume["gdelt_articles"] = 0.0
+            volume["gdelt_robust"] = 0.0
+        else:
+            scaler = RobustScaler()
+            volume["gdelt_robust"] = scaler.fit_transform(volume[["gdelt_articles"]])
+
         merged = volume.join(tone, how="left")
+        if "sentiment_score" not in merged.columns:
+            merged["sentiment_score"] = np.nan
+        merged = merged.sort_index()
+
+        if merged.empty:
+            raise RuntimeError(
+                "GDELT produced an empty merged dataset for "
+                f"ticker={self.config.TICKER}, query={self.config.resolved_gdelt_query!r}. "
+                "The query should be checked before continuing."
+            )
 
         output_path = self.output_path(legacy_name="gdelt_data.csv", generic_stem="gdelt_data")
         merged.to_csv(output_path, index=True)
