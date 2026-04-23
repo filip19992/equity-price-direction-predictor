@@ -1,3 +1,0 @@
-ticker,rows,date_min,date_max,n_positive,n_negative,n_neutral
-AAPL,752,2023-01-03,2025-12-31,361,291,99
-TSLA,752,2023-01-03,2025-12-31,367,343,41
