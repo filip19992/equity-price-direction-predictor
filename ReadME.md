@@ -325,6 +325,96 @@ So the follow-up around the frozen baseline suggests:
 - simple Reddit lag additions are not justified by validation,
 - but replacing current Reddit post-count features with lagged binary `has_posts` indicators for both submissions and comments is the strongest validation-selected refinement tested so far.
 
+### Compact benchmark follow-up notebooks
+
+Several later compact notebooks were used as controlled checks with very small feature sets and simpler model families. These runs were useful mainly for testing whether a small number of carefully chosen signals could survive under stronger regularization or simpler model designs.
+
+#### Compact standardized signal notebooks
+
+The first compact benchmark used only:
+- basic price and volume features,
+- `comm_reddit_vader_mean_lag_1`,
+- `gdelt_sentiment_score_lag_1`,
+- and a `google_trends_direction_1d` feature.
+
+Its main results were:
+- compact standardized logistic regression:
+  - validation balanced accuracy: `0.5090`
+  - test balanced accuracy: `0.4816`
+- compact MLP with the original small `3`-config sweep:
+  - validation balanced accuracy: `0.5024`
+  - test balanced accuracy: `0.5250`
+- compact MLP with the wider `48`-config validation sweep:
+  - validation balanced accuracy: `0.5201`
+  - test balanced accuracy: `0.4911`
+
+This showed that:
+- widening the MLP search helped validation materially over both the compact logistic baseline and the first small MLP sweep,
+- but the better validation point estimate did not translate into a robust final test gain.
+
+#### Current-day sentiment compact MLP
+
+For an end-of-day prediction interpretation, the lagged Reddit comment sentiment and lagged GDELT sentiment were then replaced with their current-day values:
+- `comm_reddit_vader_mean`
+- `gdelt_sentiment_score`
+
+With the same `48`-config MLP sweep:
+- validation balanced accuracy improved further to `0.5289`,
+- but test balanced accuracy fell to `0.4830`.
+
+So in this compact MLP line:
+- current-day sentiment looked better on validation than lagged sentiment,
+- but neither version produced a convincing test result on a single final holdout block.
+
+#### Rolling outer time evaluation of the compact current-sentiment MLP
+
+To get a more defensible view than a single holdout block, the compact current-sentiment MLP was then evaluated with:
+- `3` rolling outer time windows,
+- inner `3`-fold walk-forward validation,
+- `48` MLP hyperparameter configurations per outer fold,
+- and validation-only threshold tuning over `21` probability thresholds.
+
+The mean results were:
+- mean outer validation balanced accuracy: `0.5352`
+- mean outer test balanced accuracy with tuned threshold: `0.4964`
+- mean outer test balanced accuracy with default `0.50` threshold: `0.4941`
+
+This added two important conclusions:
+- threshold tuning helped only marginally on average (`+0.0024` mean outer test balanced accuracy),
+- and the selected MLP configuration was unstable across outer folds.
+
+So the compact MLP looked promising on inner validation, but weak on repeated outer-time generalization.
+
+### `notebooksv2` simple z-score feature-set finding
+
+A separate simple z-score logistic notebook compared the following compact nested feature sets:
+- price only,
+- price + volume,
+- price + volume + GDELT,
+- price + volume + GDELT + Reddit,
+- price + volume + all alternative data.
+
+On that single holdout benchmark, the best result came from:
+- `Model C - price + volume + GDELT`
+  - accuracy: `0.5462`
+  - balanced accuracy: `0.5432`
+  - AUC: `0.5598`
+
+The ranking was:
+1. `Model C - price + volume + GDELT`
+2. `Model E - price + volume + all alternative data`
+3. `Model D - price + volume + GDELT + Reddit`
+4. `Model A - price only`
+5. `Model B - price + volume`
+
+The main interpretation from that notebook was:
+- `GDELT` helped clearly in this compact z-score linear setup,
+- `volume` alone did not help,
+- adding `Reddit` and then `Google` on top of the GDELT model did not improve the single-holdout result,
+- and a simple compact feature set could remain competitive without large lag expansions.
+
+This result should still be treated cautiously because it came from a simple holdout notebook rather than a walk-forward validation benchmark.
+
 ### Best models to carry forward
 
 If the goal is the strongest raw test point estimate from these runs, the best candidate is:
