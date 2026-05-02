@@ -50,12 +50,51 @@ def validate_date_range(start_date: dt.date, end_date: dt.date) -> None:
         )
 
 
-def build_config(args: argparse.Namespace) -> Config:
-    defaults = Config()
-    ticker = (args.ticker or defaults.TICKER).strip().upper()
+def shift_date_years(value: dt.date, years: int) -> dt.date:
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        # Handles leap day when the target year is not a leap year.
+        return value.replace(year=value.year + years, day=28)
+
+
+def resolve_date_range(args: argparse.Namespace, defaults: Config) -> tuple[dt.date, dt.date]:
+    if args.backfill_years is not None:
+        if args.backfill_years < 1:
+            raise argparse.ArgumentTypeError("--backfill-years must be greater than 0.")
+        if args.start_date is not None or args.end_date is not None:
+            raise argparse.ArgumentTypeError(
+                "--backfill-years cannot be combined with --start-date or --end-date."
+            )
+
+        start_date = shift_date_years(defaults.START_DATE, -args.backfill_years)
+        end_date = defaults.START_DATE - dt.timedelta(days=1)
+        validate_date_range(start_date, end_date)
+        return start_date, end_date
+
     start_date = args.start_date or defaults.START_DATE
     end_date = args.end_date or defaults.END_DATE
     validate_date_range(start_date, end_date)
+    return start_date, end_date
+
+
+def resolve_output_tag(
+    args: argparse.Namespace,
+    ticker: str,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> str | None:
+    if args.output_tag:
+        return args.output_tag
+    if args.backfill_years is None:
+        return None
+    return f"{ticker.lower()}_{start_date:%Y%m%d}_{end_date:%Y%m%d}"
+
+
+def build_config(args: argparse.Namespace) -> Config:
+    defaults = Config()
+    ticker = (args.ticker or defaults.TICKER).strip().upper()
+    start_date, end_date = resolve_date_range(args, defaults)
 
     return build_profiled_config(
         ticker=ticker,
@@ -74,7 +113,7 @@ def build_config(args: argparse.Namespace) -> Config:
         reddit_comments_source=(
             args.reddit_comments_source or defaults.REDDIT_COMMENTS_SOURCE
         ),
-        output_tag=args.output_tag,
+        output_tag=resolve_output_tag(args, ticker, start_date, end_date),
     )
 
 
@@ -112,6 +151,7 @@ def run_importers(
     config: Config | None = None,
     skip_existing: bool = False,
     continue_on_error: bool = False,
+    no_overwrite: bool = False,
 ) -> dict[str, object]:
     runtime_config = config or Config()
     importer_names = selected or DEFAULT_IMPORTERS
@@ -138,6 +178,19 @@ def run_importers(
             results[importer.name] = (
                 expected_outputs[0] if len(expected_outputs) == 1 else expected_outputs
             )
+            continue
+
+        existing_outputs = tuple(path for path in expected_outputs if path.exists())
+        if no_overwrite and existing_outputs:
+            message = (
+                f"Refusing to run importer: {importer.name}. "
+                f"Existing output file(s) would be overwritten: "
+                f"{', '.join(str(path) for path in existing_outputs)}"
+            )
+            if not continue_on_error:
+                raise FileExistsError(message)
+            print(message)
+            results[importer.name] = {"error": message}
             continue
 
         print(f"Running importer: {importer.name}")
@@ -175,9 +228,7 @@ def collect_requested_tickers(args: argparse.Namespace) -> list[str]:
 
 def build_configs(args: argparse.Namespace) -> list[Config]:
     defaults = Config()
-    start_date = args.start_date or defaults.START_DATE
-    end_date = args.end_date or defaults.END_DATE
-    validate_date_range(start_date, end_date)
+    start_date, end_date = resolve_date_range(args, defaults)
 
     tickers = collect_requested_tickers(args)
     if not tickers:
@@ -216,6 +267,7 @@ def build_configs(args: argparse.Namespace) -> list[Config]:
             reddit_comments_source=(
                 args.reddit_comments_source or defaults.REDDIT_COMMENTS_SOURCE
             ),
+            output_tag=resolve_output_tag(args, ticker, start_date, end_date),
         )
         for ticker in tickers
     ]
@@ -226,6 +278,7 @@ def run_batch(
     selected: list[str] | None = None,
     skip_existing: bool = False,
     continue_on_error: bool = False,
+    no_overwrite: bool = False,
 ) -> dict[str, dict[str, object]]:
     results: dict[str, dict[str, object]] = {}
     for index, config in enumerate(configs, start=1):
@@ -235,6 +288,7 @@ def run_batch(
             config=config,
             skip_existing=skip_existing,
             continue_on_error=continue_on_error,
+            no_overwrite=no_overwrite,
         )
     return results
 
@@ -287,6 +341,15 @@ def parse_args() -> argparse.Namespace:
         help="End date in YYYY-MM-DD format.",
     )
     parser.add_argument(
+        "--backfill-years",
+        type=int,
+        help=(
+            "Fetch N full years before the default START_DATE into date-tagged output files. "
+            "For the current default START_DATE=2023-01-01, --backfill-years 2 uses "
+            "2021-01-01 through 2022-12-31."
+        ),
+    )
+    parser.add_argument(
         "--output-tag",
         help="Optional output suffix/tag for generated files. Defaults to ticker.",
     )
@@ -308,6 +371,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-existing",
         action="store_true",
         help="Skip importers whose expected output files already exist.",
+    )
+    parser.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="Abort before running an importer if any expected output file already exists.",
     )
     parser.add_argument(
         "--continue-on-error",
@@ -337,6 +405,7 @@ def main() -> dict[str, object] | dict[str, dict[str, object]]:
         configs = build_configs(args)
     except argparse.ArgumentTypeError as exc:
         raise SystemExit(str(exc)) from exc
+    no_overwrite = args.no_overwrite or args.backfill_years is not None
 
     if len(configs) == 1:
         return run_importers(
@@ -344,12 +413,14 @@ def main() -> dict[str, object] | dict[str, dict[str, object]]:
             config=configs[0],
             skip_existing=args.skip_existing,
             continue_on_error=args.continue_on_error,
+            no_overwrite=no_overwrite,
         )
     return run_batch(
         configs,
         selected=args.importers,
         skip_existing=args.skip_existing,
         continue_on_error=args.continue_on_error,
+        no_overwrite=no_overwrite,
     )
 
 
