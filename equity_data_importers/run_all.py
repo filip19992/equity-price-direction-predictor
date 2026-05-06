@@ -43,6 +43,16 @@ def parse_date(value: str) -> dt.date:
         ) from exc
 
 
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid integer value '{value}'.") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("Value must be greater than 0.")
+    return parsed
+
+
 def validate_date_range(start_date: dt.date, end_date: dt.date) -> None:
     if end_date < start_date:
         raise argparse.ArgumentTypeError(
@@ -91,10 +101,45 @@ def resolve_output_tag(
     return f"{ticker.lower()}_{start_date:%Y%m%d}_{end_date:%Y%m%d}"
 
 
+def resolve_google_trends_reference_range(
+    args: argparse.Namespace,
+    start_date: dt.date,
+    end_date: dt.date,
+    defaults: Config,
+) -> tuple[dt.date | None, dt.date | None]:
+    reference_start = args.google_trends_reference_start_date
+    reference_end = args.google_trends_reference_end_date
+
+    if args.backfill_years is not None:
+        reference_start = reference_start or start_date
+        reference_end = reference_end or defaults.END_DATE
+
+    if (reference_start is None) != (reference_end is None):
+        raise argparse.ArgumentTypeError(
+            "Both --google-trends-reference-start-date and "
+            "--google-trends-reference-end-date must be provided together."
+        )
+    if reference_start is None or reference_end is None:
+        return None, None
+
+    validate_date_range(reference_start, reference_end)
+    if reference_start > start_date or reference_end < end_date:
+        raise argparse.ArgumentTypeError(
+            "Google Trends reference range must cover the requested import range."
+        )
+    return reference_start, reference_end
+
+
 def build_config(args: argparse.Namespace) -> Config:
     defaults = Config()
     ticker = (args.ticker or defaults.TICKER).strip().upper()
     start_date, end_date = resolve_date_range(args, defaults)
+    reference_start, reference_end = resolve_google_trends_reference_range(
+        args,
+        start_date,
+        end_date,
+        defaults,
+    )
 
     return build_profiled_config(
         ticker=ticker,
@@ -102,6 +147,10 @@ def build_config(args: argparse.Namespace) -> Config:
         trends_query=args.trends_query,
         gdelt_query=args.gdelt_query,
         geo=args.geo or defaults.GEO,
+        google_trends_window_days=args.google_trends_window_days,
+        google_trends_reference_scaling=args.google_trends_reference_scaling,
+        google_trends_reference_start_date=reference_start,
+        google_trends_reference_end_date=reference_end,
         start_date=start_date,
         end_date=end_date,
         finbert_required=(
@@ -229,6 +278,12 @@ def collect_requested_tickers(args: argparse.Namespace) -> list[str]:
 def build_configs(args: argparse.Namespace) -> list[Config]:
     defaults = Config()
     start_date, end_date = resolve_date_range(args, defaults)
+    reference_start, reference_end = resolve_google_trends_reference_range(
+        args,
+        start_date,
+        end_date,
+        defaults,
+    )
 
     tickers = collect_requested_tickers(args)
     if not tickers:
@@ -254,6 +309,10 @@ def build_configs(args: argparse.Namespace) -> list[Config]:
         build_profiled_config(
             ticker=ticker,
             geo=args.geo or defaults.GEO,
+            google_trends_window_days=args.google_trends_window_days,
+            google_trends_reference_scaling=args.google_trends_reference_scaling,
+            google_trends_reference_start_date=reference_start,
+            google_trends_reference_end_date=reference_end,
             start_date=start_date,
             end_date=end_date,
             finbert_required=(
@@ -330,6 +389,36 @@ def parse_args() -> argparse.Namespace:
         help="Override GDELT query. Defaults to company profile or '(Company OR TICKER)'.",
     )
     parser.add_argument("--geo", help="Geo code used for Google Trends/GDELT, e.g. US.")
+    parser.add_argument(
+        "--google-trends-window-days",
+        type=positive_int,
+        help="Daily Google Trends request window size. Default: 200.",
+    )
+    parser.add_argument(
+        "--google-trends-reference-scaling",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Scale daily Google Trends windows to a full-period reference series "
+            "(default: enabled). Use --no-google-trends-reference-scaling to keep raw chunks."
+        ),
+    )
+    parser.add_argument(
+        "--google-trends-reference-start-date",
+        type=parse_date,
+        help=(
+            "Start date for the common Google Trends reference scale. "
+            "Use this when importing split periods that must share one scale."
+        ),
+    )
+    parser.add_argument(
+        "--google-trends-reference-end-date",
+        type=parse_date,
+        help=(
+            "End date for the common Google Trends reference scale. "
+            "Use this when importing split periods that must share one scale."
+        ),
+    )
     parser.add_argument(
         "--start-date",
         type=parse_date,

@@ -94,6 +94,28 @@ class GoogleTrendsImporter(BaseImporter):
     def get_cache_path(self, start_date: dt.date, end_date: dt.date) -> Path:
         return self.cache_dir / f"{start_date.isoformat()}_{end_date.isoformat()}.csv"
 
+    def get_reference_cache_path(self, start_date: dt.date, end_date: dt.date) -> Path:
+        return self.cache_dir / f"reference_{start_date.isoformat()}_{end_date.isoformat()}.csv"
+
+    @staticmethod
+    def normalize_trends_index(frame: pd.DataFrame) -> pd.DataFrame:
+        normalized = frame.copy()
+        normalized.index = pd.to_datetime(normalized.index, errors="coerce")
+        normalized = normalized[normalized.index.notna()]
+        normalized.index = normalized.index.normalize()
+        normalized.index.name = "date"
+        return normalized.sort_index()
+
+    def read_cached_trends_frame(self, cache_path: Path, value_col: str) -> pd.DataFrame:
+        frame = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+        frame = self.normalize_trends_index(frame)
+        if value_col not in frame.columns and "trends_score" in frame.columns:
+            frame = frame.rename(columns={"trends_score": value_col})
+        if value_col not in frame.columns:
+            frame[value_col] = np.nan
+        frame[value_col] = pd.to_numeric(frame[value_col], errors="coerce")
+        return frame[[value_col]]
+
     def build_empty_window_frame(
         self,
         start_date: dt.date,
@@ -102,6 +124,13 @@ class GoogleTrendsImporter(BaseImporter):
         return pd.DataFrame(
             {"trends_score": pd.Series(dtype="float64")},
             index=pd.date_range(start_date, end_date, freq="D", name="date"),
+        )
+
+    @staticmethod
+    def build_empty_reference_frame() -> pd.DataFrame:
+        return pd.DataFrame(
+            {"trends_reference_score": pd.Series(dtype="float64")},
+            index=pd.DatetimeIndex([], name="date"),
         )
 
     def fetch_google_trends_window(
@@ -117,7 +146,9 @@ class GoogleTrendsImporter(BaseImporter):
         cache_path = self.get_cache_path(start_date, end_date)
         if cache_path.exists():
             print(f"Using cached Google Trends window: {timeframe}")
-            return pd.read_csv(cache_path, index_col=0, parse_dates=True)
+            frame = self.read_cached_trends_frame(cache_path, "trends_score")
+            frame.attrs["google_trends_cache_hit"] = True
+            return frame
 
         for attempt in range(1, self.max_window_attempts + 1):
             try:
@@ -142,6 +173,11 @@ class GoogleTrendsImporter(BaseImporter):
                 else:
                     frame = frame.rename(columns={query: "trends_score"})
                     frame = frame[["trends_score"]]
+                    frame = self.normalize_trends_index(frame)
+                    frame["trends_score"] = pd.to_numeric(
+                        frame["trends_score"],
+                        errors="coerce",
+                    )
                     print(f"Google Trends {timeframe}: {len(frame)} rows")
 
                 frame.to_csv(cache_path, index=True)
@@ -166,6 +202,173 @@ class GoogleTrendsImporter(BaseImporter):
                 ) from exc
 
         raise RuntimeError(f"Failed to fetch Google Trends window {timeframe}")
+
+    def fetch_google_trends_reference(
+        self,
+        *,
+        query: str,
+        start_date: dt.date,
+        end_date: dt.date,
+        geo: str | None,
+        user_agents: list[str],
+    ) -> pd.DataFrame:
+        timeframe = f"{start_date:%Y-%m-%d} {end_date:%Y-%m-%d}"
+        cache_path = self.get_reference_cache_path(start_date, end_date)
+        if cache_path.exists():
+            print(f"Using cached Google Trends reference: {timeframe}")
+            return self.read_cached_trends_frame(cache_path, "trends_reference_score")
+
+        for attempt in range(1, self.max_window_attempts + 1):
+            try:
+                self.wait_for_request_slot()
+                headers = {"User-Agent": random.choice(user_agents)}
+                trends = TrendReq(
+                    hl="en-US",
+                    tz=360,
+                    retries=3,
+                    backoff_factor=0.5,
+                    requests_args={"headers": headers},
+                )
+                trends.build_payload([query], timeframe=timeframe, geo=geo)
+                frame = trends.interest_over_time().drop(
+                    columns="isPartial", errors="ignore"
+                )
+                self.mark_request()
+
+                if frame.empty:
+                    print(f"No Google Trends reference data for {timeframe}")
+                    frame = self.build_empty_reference_frame()
+                else:
+                    frame = frame.rename(columns={query: "trends_reference_score"})
+                    frame = frame[["trends_reference_score"]]
+                    frame = self.normalize_trends_index(frame)
+                    frame["trends_reference_score"] = pd.to_numeric(
+                        frame["trends_reference_score"],
+                        errors="coerce",
+                    )
+                    print(f"Google Trends reference {timeframe}: {len(frame)} rows")
+
+                frame.to_csv(cache_path, index=True)
+                frame.attrs["google_trends_cache_hit"] = False
+                return frame
+            except Exception as exc:
+                self.mark_request()
+                if self.is_retry_compat_error(exc):
+                    raise RuntimeError(
+                        "Google Trends dependency mismatch: pytrends is incompatible with "
+                        "the installed urllib3. In your active conda env run: "
+                        "pip install \"urllib3<2\" and retry."
+                    ) from exc
+                if self.is_rate_limited_error(exc) and attempt < self.max_window_attempts:
+                    print(
+                        f"Google Trends 429 for reference {timeframe} "
+                        f"(attempt {attempt}/{self.max_window_attempts}): {exc}"
+                    )
+                    self.wait_after_rate_limit(attempt)
+                    continue
+                raise RuntimeError(
+                    f"Failed to fetch Google Trends reference {timeframe}"
+                ) from exc
+
+        raise RuntimeError(f"Failed to fetch Google Trends reference {timeframe}")
+
+    @staticmethod
+    def weekly_mean_by_period(frame: pd.DataFrame, column: str) -> pd.Series:
+        if frame.empty or column not in frame.columns:
+            return pd.Series(dtype="float64")
+        values = pd.to_numeric(frame[column], errors="coerce").dropna()
+        if values.empty:
+            return pd.Series(dtype="float64")
+        return values.groupby(values.index.to_period("W-SUN")).mean()
+
+    def compute_reference_scale_factor(
+        self,
+        window_frame: pd.DataFrame,
+        reference_frame: pd.DataFrame,
+    ) -> float:
+        window_weekly = self.weekly_mean_by_period(window_frame, "trends_score")
+        reference_weekly = self.weekly_mean_by_period(
+            reference_frame,
+            "trends_reference_score",
+        )
+        aligned = pd.concat(
+            {"window": window_weekly, "reference": reference_weekly},
+            axis=1,
+        ).dropna()
+        aligned = aligned[(aligned["window"] > 0.0) & (aligned["reference"] > 0.0)]
+        if aligned.empty:
+            return 1.0
+
+        ratios = (aligned["reference"] / aligned["window"]).replace(
+            [np.inf, -np.inf],
+            np.nan,
+        ).dropna()
+        if ratios.empty:
+            return 1.0
+
+        scale_factor = float(ratios.median())
+        if not np.isfinite(scale_factor) or scale_factor <= 0.0:
+            return 1.0
+        return scale_factor
+
+    def map_reference_score_to_window(
+        self,
+        window_frame: pd.DataFrame,
+        reference_frame: pd.DataFrame,
+    ) -> pd.Series:
+        reference_weekly = self.weekly_mean_by_period(
+            reference_frame,
+            "trends_reference_score",
+        )
+        if reference_weekly.empty:
+            return pd.Series(np.nan, index=window_frame.index, dtype="float64")
+        periods = window_frame.index.to_period("W-SUN")
+        return pd.Series(periods, index=window_frame.index).map(reference_weekly)
+
+    def scale_google_trends_window(
+        self,
+        window_frame: pd.DataFrame,
+        reference_frame: pd.DataFrame,
+        *,
+        use_reference_scaling: bool,
+    ) -> pd.DataFrame:
+        frame = self.normalize_trends_index(window_frame)
+        raw_score = pd.to_numeric(frame["trends_score"], errors="coerce")
+        scale_factor = (
+            self.compute_reference_scale_factor(frame, reference_frame)
+            if use_reference_scaling
+            else 1.0
+        )
+
+        frame["trends_score_raw"] = raw_score
+        frame["trends_reference_score"] = (
+            self.map_reference_score_to_window(frame, reference_frame)
+            if use_reference_scaling
+            else np.nan
+        )
+        frame["trends_reference_scale_factor"] = scale_factor
+        frame["trends_score"] = raw_score * scale_factor
+        return frame[
+            [
+                "trends_score",
+                "trends_score_raw",
+                "trends_reference_score",
+                "trends_reference_scale_factor",
+            ]
+        ]
+
+    def resolve_reference_range(
+        self,
+        start_date: dt.date,
+        end_date: dt.date,
+    ) -> tuple[dt.date, dt.date]:
+        reference_start = self.config.GOOGLE_TRENDS_REFERENCE_START_DATE or start_date
+        reference_end = self.config.GOOGLE_TRENDS_REFERENCE_END_DATE or end_date
+        if reference_start > start_date or reference_end < end_date:
+            raise ValueError(
+                "Google Trends reference range must cover the requested import range."
+            )
+        return reference_start, reference_end
 
     def fetch_google_trends(
         self,
@@ -197,22 +400,58 @@ class GoogleTrendsImporter(BaseImporter):
                 user_agents=user_agents,
             )
             collected.append(frame)
+            cache_hit = bool(frame.attrs.get("google_trends_cache_hit", False))
 
             current_start = current_end + dt.timedelta(days=1)
-            if current_start <= end_date:
+            if current_start <= end_date and not cache_hit:
                 wait_seconds = random.randint(*self.inter_window_wait_range_seconds)
                 print(f"Waiting {wait_seconds}s before the next Trends request")
                 time.sleep(wait_seconds)
 
         if not collected:
             return pd.DataFrame(
-                columns=["trends_score"],
+                columns=[
+                    "trends_score",
+                    "trends_score_raw",
+                    "trends_reference_score",
+                    "trends_reference_scale_factor",
+                ],
                 index=pd.date_range(start_date, end_date, freq="D"),
             )
 
-        full = pd.concat(collected).sort_index()
+        use_reference_scaling = self.config.GOOGLE_TRENDS_REFERENCE_SCALING
+        reference_frame = self.build_empty_reference_frame()
+        if use_reference_scaling:
+            reference_start, reference_end = self.resolve_reference_range(
+                start_date,
+                end_date,
+            )
+            reference_frame = self.fetch_google_trends_reference(
+                query=query,
+                start_date=reference_start,
+                end_date=reference_end,
+                geo=geo,
+                user_agents=user_agents,
+            )
+
+        scaled = [
+            self.scale_google_trends_window(
+                frame,
+                reference_frame,
+                use_reference_scaling=use_reference_scaling,
+            )
+            for frame in collected
+        ]
+        full = pd.concat(scaled).sort_index()
         full = full[~full.index.duplicated()]
-        return full[["trends_score"]]
+        return full[
+            [
+                "trends_score",
+                "trends_score_raw",
+                "trends_reference_score",
+                "trends_reference_scale_factor",
+            ]
+        ]
 
     def run(self) -> Path:
         frame = self.fetch_google_trends(
@@ -220,7 +459,7 @@ class GoogleTrendsImporter(BaseImporter):
             start_date=self.config.START_DATE,
             end_date=self.config.END_DATE,
             geo=self.config.GEO,
-            window_days=200,
+            window_days=self.config.GOOGLE_TRENDS_WINDOW_DAYS,
         )
         output_path = self.output_path(
             legacy_name="google_trends_data.csv",

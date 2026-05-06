@@ -80,6 +80,10 @@ class Config:
     GDELT_QUERY: str | None = None
     TRENDS_QUERY: str | None = None
     GEO: str = "US"
+    GOOGLE_TRENDS_WINDOW_DAYS: int = 200
+    GOOGLE_TRENDS_REFERENCE_SCALING: bool = True
+    GOOGLE_TRENDS_REFERENCE_START_DATE: dt.date | None = None
+    GOOGLE_TRENDS_REFERENCE_END_DATE: dt.date | None = None
     START_DATE: dt.date = dt.date(2023, 1, 1)
     END_DATE: dt.date = dt.date(2025, 12, 31)
     FINBERT_REQUIRED: bool = True
@@ -147,6 +151,10 @@ def build_profiled_config(
     trends_query: str | None = None,
     gdelt_query: str | None = None,
     geo: str | None = None,
+    google_trends_window_days: int | None = None,
+    google_trends_reference_scaling: bool | None = None,
+    google_trends_reference_start_date: dt.date | None = None,
+    google_trends_reference_end_date: dt.date | None = None,
     start_date: dt.date | None = None,
     end_date: dt.date | None = None,
     finbert_required: bool | None = None,
@@ -172,6 +180,18 @@ def build_profiled_config(
         GDELT_QUERY=gdelt_query if gdelt_query is not None else profile.get("GDELT_QUERY"),
         TRENDS_QUERY=trends_query if trends_query is not None else profile.get("TRENDS_QUERY"),
         GEO=(geo if geo is not None else defaults.GEO).strip(),
+        GOOGLE_TRENDS_WINDOW_DAYS=(
+            defaults.GOOGLE_TRENDS_WINDOW_DAYS
+            if google_trends_window_days is None
+            else google_trends_window_days
+        ),
+        GOOGLE_TRENDS_REFERENCE_SCALING=(
+            defaults.GOOGLE_TRENDS_REFERENCE_SCALING
+            if google_trends_reference_scaling is None
+            else google_trends_reference_scaling
+        ),
+        GOOGLE_TRENDS_REFERENCE_START_DATE=google_trends_reference_start_date,
+        GOOGLE_TRENDS_REFERENCE_END_DATE=google_trends_reference_end_date,
         START_DATE=start_date or defaults.START_DATE,
         END_DATE=end_date or defaults.END_DATE,
         FINBERT_REQUIRED=(
