@@ -4,7 +4,7 @@ channels:
 dependencies:
   - python=3.11
   - pandas
-  - numpy
+  - numpy>=1.26,<2.0
   - pyarrow
   - scikit-learn
   - xgboost
@@ -17,6 +17,7 @@ dependencies:
   - seaborn
   - pip:
       - urllib3<2
+      - tensorflow==2.17.1
       - yfinance
       - pytrends
       - vaderSentiment
