@@ -12,8 +12,10 @@ from equity_data_importers.config import (
 from equity_data_importers.importers import (
     GdeltImporter,
     GoogleTrendsImporter,
+    MarketBenchmarkImporter,
     RedditCommentsImporter,
     RedditImporter,
+    RichStockPriceImporter,
     StockPriceImporter,
 )
 
@@ -23,6 +25,8 @@ IMPORTERS = {
     "reddit": RedditImporter,
     "reddit_comments": RedditCommentsImporter,
     "stock_price": StockPriceImporter,
+    "stock_price_rich": RichStockPriceImporter,
+    "market_benchmark": MarketBenchmarkImporter,
 }
 
 DEFAULT_IMPORTERS = [
@@ -162,6 +166,7 @@ def build_config(args: argparse.Namespace) -> Config:
         reddit_comments_source=(
             args.reddit_comments_source or defaults.REDDIT_COMMENTS_SOURCE
         ),
+        market_benchmark_ticker=args.market_benchmark_ticker,
         output_tag=resolve_output_tag(args, ticker, start_date, end_date),
     )
 
@@ -192,6 +197,10 @@ def get_expected_output_paths(importer: object) -> tuple[Path, ...]:
                 generic_stem="stock-prices-data",
             ),
         )
+    if isinstance(importer, RichStockPriceImporter):
+        return (importer.rich_output_path(),)
+    if isinstance(importer, MarketBenchmarkImporter):
+        return (importer.benchmark_output_path(),)
     return ()
 
 
@@ -213,6 +222,7 @@ def run_importers(
         f"geo={runtime_config.GEO}, "
         f"start={runtime_config.START_DATE}, "
         f"end={runtime_config.END_DATE}, "
+        f"market_benchmark={runtime_config.MARKET_BENCHMARK_TICKER}, "
         f"output_tag={runtime_config.resolved_output_tag}"
     )
 
@@ -326,6 +336,7 @@ def build_configs(args: argparse.Namespace) -> list[Config]:
             reddit_comments_source=(
                 args.reddit_comments_source or defaults.REDDIT_COMMENTS_SOURCE
             ),
+            market_benchmark_ticker=args.market_benchmark_ticker,
             output_tag=resolve_output_tag(args, ticker, start_date, end_date),
         )
         for ticker in tickers
@@ -449,6 +460,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reddit-comments-source",
         help="Input filename for reddit comments NDJSON (in data/equity_data).",
+    )
+    parser.add_argument(
+        "--market-benchmark-ticker",
+        default=None,
+        help="Benchmark ticker used by the market_benchmark importer. Default: QQQ.",
     )
     parser.add_argument(
         "--finbert-required",

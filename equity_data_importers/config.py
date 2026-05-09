@@ -89,6 +89,7 @@ class Config:
     FINBERT_REQUIRED: bool = True
     REDDIT_SUBMISSIONS_SOURCE: str = "stocks_submissions"
     REDDIT_COMMENTS_SOURCE: str = "stocks_comments"
+    MARKET_BENCHMARK_TICKER: str = "QQQ"
     OUTPUT_TAG: str | None = None
 
     @property
@@ -160,6 +161,7 @@ def build_profiled_config(
     finbert_required: bool | None = None,
     reddit_submissions_source: str | None = None,
     reddit_comments_source: str | None = None,
+    market_benchmark_ticker: str | None = None,
     output_tag: str | None = None,
 ) -> Config:
     defaults = Config()
@@ -199,5 +201,8 @@ def build_profiled_config(
         ),
         REDDIT_SUBMISSIONS_SOURCE=reddit_submissions_source or defaults.REDDIT_SUBMISSIONS_SOURCE,
         REDDIT_COMMENTS_SOURCE=reddit_comments_source or defaults.REDDIT_COMMENTS_SOURCE,
+        MARKET_BENCHMARK_TICKER=(
+            market_benchmark_ticker or defaults.MARKET_BENCHMARK_TICKER
+        ).strip().upper(),
         OUTPUT_TAG=output_tag,
     )

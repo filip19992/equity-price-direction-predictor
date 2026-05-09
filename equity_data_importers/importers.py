@@ -1250,3 +1250,174 @@ class StockPriceImporter(BaseImporter):
         stock_frame.to_csv(output_path, index=True)
         print(f"Saved stock price data to {output_path}")
         return output_path
+
+
+class RichStockPriceImporter(BaseImporter):
+    name = "stock_price_rich"
+
+    required_yfinance_columns = ("Open", "High", "Low", "Close", "Volume")
+    optional_yfinance_columns = ("Adj Close",)
+    output_columns = {
+        "Open": "open_stock_price",
+        "High": "high_stock_price",
+        "Low": "low_stock_price",
+        "Close": "close_stock_price",
+        "Adj Close": "adjusted_close_stock_price",
+        "Volume": "stock_volume",
+    }
+
+    def rich_output_path(self) -> Path:
+        return self.data_dir / f"stock-prices-rich-data_{self.config.resolved_output_tag}.csv"
+
+    def normalize_yfinance_columns(self, raw: pd.DataFrame) -> pd.DataFrame:
+        frame = raw.copy()
+        if isinstance(frame.columns, pd.MultiIndex):
+            ticker = self.config.TICKER.upper()
+            if ticker in frame.columns.get_level_values(-1):
+                frame = frame.xs(ticker, axis=1, level=-1)
+            elif ticker in frame.columns.get_level_values(0):
+                frame = frame.xs(ticker, axis=1, level=0)
+            else:
+                frame.columns = frame.columns.get_level_values(0)
+        return frame
+
+    def build_stock_frame(self, raw: pd.DataFrame) -> pd.DataFrame:
+        frame = self.normalize_yfinance_columns(raw)
+        missing_required = [
+            column for column in self.required_yfinance_columns if column not in frame.columns
+        ]
+        if frame.empty or missing_required:
+            raise RuntimeError(
+                "Rich stock price data is empty or missing required columns: "
+                + ", ".join(missing_required)
+            )
+
+        columns = [
+            *self.required_yfinance_columns,
+            *(column for column in self.optional_yfinance_columns if column in frame.columns),
+        ]
+        stock_frame = frame[columns].copy()
+        if "Adj Close" not in stock_frame.columns:
+            stock_frame["Adj Close"] = stock_frame["Close"]
+        stock_frame = stock_frame[list(self.output_columns)]
+        stock_frame = stock_frame.rename(columns=self.output_columns)
+
+        for column in stock_frame.columns:
+            stock_frame[column] = pd.to_numeric(stock_frame[column], errors="coerce")
+        return stock_frame
+
+    def run(self) -> Path:
+        yf_end = self.config.END_DATE + dt.timedelta(days=1)
+        print(f"Fetching rich stock price data for {self.config.TICKER}")
+        raw = yf.download(
+            self.config.TICKER,
+            start=str(self.config.START_DATE),
+            end=str(yf_end),
+            progress=False,
+            auto_adjust=True,
+        )
+
+        stock_frame = self.build_stock_frame(raw)
+        output_path = self.rich_output_path()
+        stock_frame.to_csv(output_path, index=True)
+        print(f"Saved rich stock price data to {output_path}")
+        return output_path
+
+
+class MarketBenchmarkImporter(BaseImporter):
+    name = "market_benchmark"
+
+    required_yfinance_columns = ("Open", "High", "Low", "Close", "Volume")
+    optional_yfinance_columns = ("Adj Close",)
+    output_columns = {
+        "Open": "benchmark_open_price",
+        "High": "benchmark_high_price",
+        "Low": "benchmark_low_price",
+        "Close": "benchmark_close_price",
+        "Adj Close": "benchmark_adjusted_close_price",
+        "Volume": "benchmark_volume",
+    }
+
+    @property
+    def benchmark_ticker(self) -> str:
+        return self.config.MARKET_BENCHMARK_TICKER.strip().upper() or "QQQ"
+
+    @staticmethod
+    def sanitize_benchmark_tag(value: str) -> str:
+        cleaned = re.sub(r"[^a-z0-9_-]+", "-", value.strip().lower()).strip("-")
+        return cleaned if cleaned else "benchmark"
+
+    def benchmark_output_tag(self) -> str:
+        benchmark_tag = self.sanitize_benchmark_tag(self.benchmark_ticker)
+        if self.config.OUTPUT_TAG:
+            return (
+                f"{benchmark_tag}_{self.config.START_DATE:%Y%m%d}_"
+                f"{self.config.END_DATE:%Y%m%d}"
+            )
+        return benchmark_tag
+
+    def benchmark_output_path(self) -> Path:
+        return self.data_dir / f"market-benchmark-data_{self.benchmark_output_tag()}.csv"
+
+    def normalize_yfinance_columns(self, raw: pd.DataFrame) -> pd.DataFrame:
+        frame = raw.copy()
+        if isinstance(frame.columns, pd.MultiIndex):
+            ticker = self.benchmark_ticker
+            if ticker in frame.columns.get_level_values(-1):
+                frame = frame.xs(ticker, axis=1, level=-1)
+            elif ticker in frame.columns.get_level_values(0):
+                frame = frame.xs(ticker, axis=1, level=0)
+            else:
+                frame.columns = frame.columns.get_level_values(0)
+        return frame
+
+    def build_benchmark_frame(self, raw: pd.DataFrame) -> pd.DataFrame:
+        frame = self.normalize_yfinance_columns(raw)
+        missing_required = [
+            column for column in self.required_yfinance_columns if column not in frame.columns
+        ]
+        if frame.empty or missing_required:
+            raise RuntimeError(
+                "Market benchmark data is empty or missing required columns: "
+                + ", ".join(missing_required)
+            )
+
+        columns = [
+            *self.required_yfinance_columns,
+            *(column for column in self.optional_yfinance_columns if column in frame.columns),
+        ]
+        benchmark_frame = frame[columns].copy()
+        if "Adj Close" not in benchmark_frame.columns:
+            benchmark_frame["Adj Close"] = benchmark_frame["Close"]
+        benchmark_frame = benchmark_frame[list(self.output_columns)]
+        benchmark_frame = benchmark_frame.rename(columns=self.output_columns)
+
+        for column in benchmark_frame.columns:
+            benchmark_frame[column] = pd.to_numeric(benchmark_frame[column], errors="coerce")
+
+        close = benchmark_frame["benchmark_close_price"]
+        benchmark_frame.insert(0, "benchmark_ticker", self.benchmark_ticker)
+        benchmark_frame["benchmark_return_1d"] = close.pct_change(1)
+        benchmark_frame["benchmark_return_5d"] = close.pct_change(5)
+        benchmark_frame["benchmark_return_20d"] = close.pct_change(20)
+        benchmark_frame["benchmark_rolling_volatility_20d"] = (
+            benchmark_frame["benchmark_return_1d"].shift(1).rolling(20).std()
+        )
+        return benchmark_frame
+
+    def run(self) -> Path:
+        yf_end = self.config.END_DATE + dt.timedelta(days=1)
+        print(f"Fetching market benchmark data for {self.benchmark_ticker}")
+        raw = yf.download(
+            self.benchmark_ticker,
+            start=str(self.config.START_DATE),
+            end=str(yf_end),
+            progress=False,
+            auto_adjust=True,
+        )
+
+        benchmark_frame = self.build_benchmark_frame(raw)
+        output_path = self.benchmark_output_path()
+        benchmark_frame.to_csv(output_path, index=True)
+        print(f"Saved market benchmark data to {output_path}")
+        return output_path
