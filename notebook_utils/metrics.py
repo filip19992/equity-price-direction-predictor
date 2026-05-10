@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Iterable
 
 import numpy as np
-import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 
 
@@ -12,6 +11,49 @@ METRIC_COLUMNS = ["accuracy", "balanced_accuracy", "f1_score"]
 
 class ClassificationMetrics:
     """Shared binary-classification metric helpers for notebook reports."""
+
+    @staticmethod
+    def candidate_thresholds_from_scores(
+        scores: Iterable[float],
+        *,
+        min_quantile: float,
+        max_quantile: float,
+        grid_size: int,
+        default_threshold: float,
+    ) -> np.ndarray:
+        finite_scores = np.asarray(scores, dtype=float)
+        finite_scores = finite_scores[np.isfinite(finite_scores)]
+        if len(finite_scores) == 0:
+            return np.array([default_threshold], dtype=float)
+
+        quantiles = np.linspace(min_quantile, max_quantile, grid_size)
+        thresholds = np.quantile(finite_scores, quantiles)
+        return np.unique(np.r_[thresholds, default_threshold])
+
+    @classmethod
+    def best_threshold_for_balanced_accuracy(
+        cls,
+        y_true: Iterable[int],
+        scores: Iterable[float],
+        *,
+        min_quantile: float,
+        max_quantile: float,
+        grid_size: int,
+        default_threshold: float,
+    ) -> tuple[float, float]:
+        y_true_array = np.asarray(y_true).astype(int)
+        score_array = np.asarray(scores, dtype=float)
+        rows = []
+        for threshold in cls.candidate_thresholds_from_scores(
+            score_array,
+            min_quantile=min_quantile,
+            max_quantile=max_quantile,
+            grid_size=grid_size,
+            default_threshold=default_threshold,
+        ):
+            preds = (score_array >= threshold).astype(int)
+            rows.append((float(threshold), float(balanced_accuracy_score(y_true_array, preds))))
+        return max(rows, key=lambda item: item[1])
 
     @staticmethod
     def metrics_from_scores(y_true: Iterable[int], scores: Iterable[float], threshold: float) -> dict:
@@ -25,15 +67,3 @@ class ClassificationMetrics:
             "preds": preds,
         }
 
-    @staticmethod
-    def compute_from_predictions(prediction_frame: pd.DataFrame, metric_name: str) -> float:
-        target_column = "y_true" if "y_true" in prediction_frame.columns else "target"
-        y_true = prediction_frame[target_column].astype(int)
-        y_pred = prediction_frame["prediction"].astype(int)
-        if metric_name == "accuracy":
-            return accuracy_score(y_true, y_pred)
-        if metric_name == "balanced_accuracy":
-            return balanced_accuracy_score(y_true, y_pred)
-        if metric_name == "f1_score":
-            return f1_score(y_true, y_pred, zero_division=0)
-        raise ValueError(f"Unsupported bootstrap metric: {metric_name}")
