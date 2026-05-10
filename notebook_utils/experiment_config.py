@@ -27,4 +27,7 @@ def build_default_config(project_root: Path) -> dict:
         "threshold_min_quantile": 0.05,
         "threshold_max_quantile": 0.95,
         "threshold_grid_size": 181,
+        "early_stopping_fraction": 0.2,
+        "min_early_stopping_dates": 40,
+        "min_fit_dates": 120,
     }
