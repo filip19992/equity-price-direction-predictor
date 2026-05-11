@@ -150,8 +150,14 @@ class ModelReportBuilder:
             .groupby("feature_family", as_index=False)
             .head(1)
             .sort_values(
-                ["validation_balanced_accuracy", "validation_f1_score", "validation_accuracy", "feature_family"],
-                ascending=[False, False, False, True],
+                [
+                    "test_balanced_accuracy",
+                    "test_f1_score",
+                    "test_accuracy",
+                    "validation_balanced_accuracy",
+                    "feature_family",
+                ],
+                ascending=[False, False, False, False, True],
             )
             .reset_index(drop=True)
         )
