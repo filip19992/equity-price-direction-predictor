@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
@@ -17,6 +18,20 @@ class ModelReportBuilder:
     @staticmethod
     def metric_sort_columns(selection_metric: str = "balanced_accuracy") -> list[str]:
         return list(dict.fromkeys([selection_metric, "balanced_accuracy", "f1_score", "accuracy"]))
+
+    @staticmethod
+    def save_final_test_verification(
+        report_df: pd.DataFrame,
+        *,
+        model_name: str,
+        output_dir: str | Path,
+    ) -> Path:
+        """Save the final validation-selected family test report for thesis comparison."""
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        report_path = output_path / f"{model_name}_final_test_verification.csv"
+        report_df.to_csv(report_path, index=False)
+        return report_path
 
     @classmethod
     def select_best_validation_by_feature_set(
