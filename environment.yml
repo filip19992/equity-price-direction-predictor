@@ -8,6 +8,7 @@ dependencies:
   - pyarrow
   - scikit-learn
   - xgboost
+  - lightgbm
   - requests
   - zstandard
   - pytorch
