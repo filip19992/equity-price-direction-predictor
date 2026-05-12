@@ -87,6 +87,15 @@ class FeatureSetGridBuilder:
             "GDELT sentiment zscore medium": ["gdelt_sentiment_zscore_20d"],
             "GDELT sentiment zscore short clipped": ["gdelt_sentiment_zscore_10d_clip3"],
             "GDELT sentiment percentile rank 20d": ["gdelt_sentiment_rank_20d"],
+            "GDELT sentiment zscore short lag1-2": [
+                "gdelt_sentiment_zscore_10d_lag1",
+                "gdelt_sentiment_zscore_10d_lag2",
+            ],
+            "GDELT sentiment zscore short lag1-3": [
+                "gdelt_sentiment_zscore_10d_lag1",
+                "gdelt_sentiment_zscore_10d_lag2",
+                "gdelt_sentiment_zscore_10d_lag3",
+            ],
         }
 
         reddit_options = {
@@ -110,6 +119,15 @@ class FeatureSetGridBuilder:
                 "reddit_sentiment_zscore_6d_lag1",
                 "reddit_comment_count_zscore_6d_lag1",
             ],
+            "Reddit sentiment zscore short lag1-2": [
+                "reddit_sentiment_zscore_6d_lag1",
+                "reddit_sentiment_zscore_6d_lag2",
+            ],
+            "Reddit sentiment zscore short lag1-3": [
+                "reddit_sentiment_zscore_6d_lag1",
+                "reddit_sentiment_zscore_6d_lag2",
+                "reddit_sentiment_zscore_6d_lag3",
+            ],
         }
 
         gdelt_attention_options = {
@@ -117,6 +135,15 @@ class FeatureSetGridBuilder:
             "GDELT attention zscore medium": ["gdelt_article_count_zscore_20d"],
             "GDELT attention log1p zscore short": ["gdelt_article_count_log1p_zscore_6d"],
             "GDELT attention percentile rank 20d": ["gdelt_article_count_rank_20d"],
+            "GDELT attention zscore short lag1-2": [
+                "gdelt_article_count_zscore_6d_lag1",
+                "gdelt_article_count_zscore_6d_lag2",
+            ],
+            "GDELT attention zscore short lag1-3": [
+                "gdelt_article_count_zscore_6d_lag1",
+                "gdelt_article_count_zscore_6d_lag2",
+                "gdelt_article_count_zscore_6d_lag3",
+            ],
         }
 
         reddit_attention_options = {
@@ -124,6 +151,15 @@ class FeatureSetGridBuilder:
             "Reddit attention zscore medium": ["reddit_comment_count_zscore_20d"],
             "Reddit attention log1p zscore short": ["reddit_comment_count_log1p_zscore_6d"],
             "Reddit attention percentile rank 20d": ["reddit_comment_count_rank_20d"],
+            "Reddit attention zscore short lag1-2": [
+                "reddit_comment_count_zscore_6d_lag1",
+                "reddit_comment_count_zscore_6d_lag2",
+            ],
+            "Reddit attention zscore short lag1-3": [
+                "reddit_comment_count_zscore_6d_lag1",
+                "reddit_comment_count_zscore_6d_lag2",
+                "reddit_comment_count_zscore_6d_lag3",
+            ],
         }
 
         google_score_attention_options = {
@@ -132,6 +168,15 @@ class FeatureSetGridBuilder:
             "Google score attention zscore 60d": ["google_trends_zscore_60d"],
             "Google score attention zscore 20d clipped": ["google_trends_zscore_20d_clip3"],
             "Google score attention percentile rank 20d": ["google_trends_rank_20d"],
+            "Google score attention zscore 10d lag1-2": [
+                "google_trends_zscore_10d_lag1",
+                "google_trends_zscore_10d_lag2",
+            ],
+            "Google score attention zscore 10d lag1-3": [
+                "google_trends_zscore_10d_lag1",
+                "google_trends_zscore_10d_lag2",
+                "google_trends_zscore_10d_lag3",
+            ],
         }
 
         google_trends_options = {
@@ -446,6 +491,78 @@ class FeatureSetGridBuilder:
                     reddit_option="Reddit attention zscore medium",
                     google_option="Google score attention zscore 20d",
                 ),
+                spec(
+                    "Model Q - price + volume + GDELT sentiment lags | lag1-3",
+                    "price + volume + GDELT sentiment lags",
+                    volume_option=base_volume_option,
+                    gdelt_option="GDELT sentiment zscore short lag1-3",
+                ),
+                spec(
+                    "Model R - price + volume + Reddit sentiment lags | lag1-3",
+                    "price + volume + Reddit sentiment lags",
+                    volume_option=base_volume_option,
+                    reddit_option="Reddit sentiment zscore short lag1-3",
+                ),
+                spec(
+                    "Model S - price + volume + GDELT attention lags | lag1-3",
+                    "price + volume + GDELT attention lags",
+                    volume_option=base_volume_option,
+                    gdelt_option="GDELT attention zscore short lag1-3",
+                ),
+                spec(
+                    "Model T - price + volume + Reddit attention lags | lag1-3",
+                    "price + volume + Reddit attention lags",
+                    volume_option=base_volume_option,
+                    reddit_option="Reddit attention zscore short lag1-3",
+                ),
+                spec(
+                    "Model U - price + volume + Google attention lags | lag1-3",
+                    "price + volume + Google attention lags",
+                    volume_option=base_volume_option,
+                    google_option="Google score attention zscore 10d lag1-3",
+                ),
+                spec(
+                    "Model V - price + volume + GDELT sentiment lag1-3 + Reddit attention lag1-2",
+                    "price + volume + GDELT sentiment lags + Reddit attention lags",
+                    volume_option=base_volume_option,
+                    gdelt_option="GDELT sentiment zscore short lag1-3",
+                    reddit_option="Reddit attention zscore short lag1-2",
+                ),
+                spec(
+                    "Model V - price + volume + GDELT sentiment lag1-2 + Reddit attention lag1-3",
+                    "price + volume + GDELT sentiment lags + Reddit attention lags",
+                    volume_option=base_volume_option,
+                    gdelt_option="GDELT sentiment zscore short lag1-2",
+                    reddit_option="Reddit attention zscore short lag1-3",
+                ),
+                spec(
+                    "Model W - price + volume + Reddit sentiment lag1-3 + GDELT attention lag1-2",
+                    "price + volume + Reddit sentiment lags + GDELT attention lags",
+                    volume_option=base_volume_option,
+                    gdelt_option="GDELT attention zscore short lag1-2",
+                    reddit_option="Reddit sentiment zscore short lag1-3",
+                ),
+                spec(
+                    "Model W - price + volume + Reddit sentiment lag1-2 + GDELT attention lag1-3",
+                    "price + volume + Reddit sentiment lags + GDELT attention lags",
+                    volume_option=base_volume_option,
+                    gdelt_option="GDELT attention zscore short lag1-3",
+                    reddit_option="Reddit sentiment zscore short lag1-2",
+                ),
+                spec(
+                    "Model X - price + volume + GDELT sentiment lag1-2 + Google attention lag1-3",
+                    "price + volume + GDELT sentiment lags + Google attention lags",
+                    volume_option=base_volume_option,
+                    gdelt_option="GDELT sentiment zscore short lag1-2",
+                    google_option="Google score attention zscore 10d lag1-3",
+                ),
+                spec(
+                    "Model Y - price + volume + Reddit sentiment lag1-2 + Google attention lag1-3",
+                    "price + volume + Reddit sentiment lags + Google attention lags",
+                    volume_option=base_volume_option,
+                    reddit_option="Reddit sentiment zscore short lag1-2",
+                    google_option="Google score attention zscore 10d lag1-3",
+                ),
             ]
         )
 
@@ -475,6 +592,7 @@ class FeatureSetGridBuilder:
 class FeatureFrameBuilder:
     """Build the shared engineered feature frame used by model notebooks."""
 
+    LAG_PERIODS = [1, 2, 3]
     LAG_SOURCE_COLUMNS = [
         "volume_zscore_20d",
         "gdelt_sentiment_zscore_10d",
@@ -533,20 +651,18 @@ class FeatureFrameBuilder:
             min_periods = max(3, window // 2)
 
         def trailing_rank(values: pd.Series) -> pd.Series:
-            shifted = values.shift(1)
+            source_values = values.to_numpy(dtype=float)
+            ranks = np.full(len(source_values), np.nan)
 
-            def rank_last(window_values: np.ndarray) -> float:
-                current_value = values.iloc[len(rank_last.results)]
-                historical_values = window_values[~np.isnan(window_values)]
-                if len(historical_values) == 0 or pd.isna(current_value):
-                    rank_last.results.append(np.nan)
-                    return np.nan
-                rank = (historical_values <= current_value).mean()
-                rank_last.results.append(rank)
-                return rank
+            for position, current_value in enumerate(source_values):
+                start = max(0, position - window)
+                historical_values = source_values[start:position]
+                historical_values = historical_values[~np.isnan(historical_values)]
+                if len(historical_values) < min_periods or np.isnan(current_value):
+                    continue
+                ranks[position] = (historical_values <= current_value).mean()
 
-            rank_last.results = []
-            return shifted.rolling(window, min_periods=min_periods).apply(rank_last, raw=True)
+            return pd.Series(ranks, index=values.index)
 
         frame[out_col] = frame.groupby("ticker")[source_col].transform(trailing_rank)
 
@@ -621,7 +737,8 @@ class FeatureFrameBuilder:
 
         if include_lag_features:
             for source_col in cls.LAG_SOURCE_COLUMNS:
-                cls.add_group_lag(frame, source_col, f"{source_col}_lag1", lag=1)
+                for lag in cls.LAG_PERIODS:
+                    cls.add_group_lag(frame, source_col, f"{source_col}_lag{lag}", lag=lag)
 
         frame["future_return_1d"] = price_group.shift(-1) / frame[price_column] - 1.0
         frame["target"] = np.select(
