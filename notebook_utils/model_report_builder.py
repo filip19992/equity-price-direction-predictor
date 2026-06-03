@@ -78,6 +78,7 @@ class ModelReportBuilder:
             "validation_accuracy",
             "validation_balanced_accuracy",
             "validation_f1_score",
+            "validation_f1_weighted",
         ]
         return (
             report[cls.available_columns(report, columns)]
@@ -93,52 +94,42 @@ class ModelReportBuilder:
         cls,
         *,
         best_validation_params_df: pd.DataFrame,
-        threshold_calibration_results_df: pd.DataFrame,
         test_best_validation_params_df: pd.DataFrame,
         baseline_feature_set: str,
+        validation_refit_results_df: pd.DataFrame,
     ) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
-        """Combine validation-selected params, calibration, and test metrics."""
+        """Combine walk-forward-selected params, validation refit metrics, and test metrics."""
         baseline_walk_forward_row = best_validation_params_df[
             best_validation_params_df["feature_set"].eq(baseline_feature_set)
         ].iloc[0]
-        baseline_calibration_row = threshold_calibration_results_df[
-            threshold_calibration_results_df["feature_set"].eq(baseline_feature_set)
+        baseline_validation_refit_row = validation_refit_results_df[
+            validation_refit_results_df["feature_set"].eq(baseline_feature_set)
         ].iloc[0]
         baseline_test_row = test_best_validation_params_df[
             test_best_validation_params_df["feature_set"].eq(baseline_feature_set)
         ].iloc[0]
 
         summary = best_validation_params_df.rename(
-            columns={
-                "accuracy": "walk_forward_mean_accuracy",
-                "balanced_accuracy": "walk_forward_mean_balanced_accuracy",
-                "f1_score": "walk_forward_mean_f1_score",
-            }
+            columns={metric: f"walk_forward_mean_{metric}" for metric in METRIC_COLUMNS}
         )
 
+        validation_refit_metric_columns = cls.available_columns(validation_refit_results_df, METRIC_COLUMNS)
+        test_metric_columns = cls.available_columns(test_best_validation_params_df, METRIC_COLUMNS)
         summary = summary.merge(
-            threshold_calibration_results_df[["feature_set", "accuracy", "balanced_accuracy", "f1_score"]].rename(
-                columns={
-                    "accuracy": "threshold_calibration_accuracy",
-                    "balanced_accuracy": "threshold_calibration_balanced_accuracy",
-                    "f1_score": "threshold_calibration_f1_score",
-                }
+            validation_refit_results_df[["feature_set", *validation_refit_metric_columns]].rename(
+                columns={metric: f"validation_refit_{metric}" for metric in validation_refit_metric_columns}
             ),
             on="feature_set",
             how="left",
         ).merge(
-            test_best_validation_params_df[["feature_set", "accuracy", "balanced_accuracy", "f1_score"]].rename(
-                columns={
-                    "accuracy": "test_accuracy",
-                    "balanced_accuracy": "test_balanced_accuracy",
-                    "f1_score": "test_f1_score",
-                }
+            test_best_validation_params_df[["feature_set", *test_metric_columns]].rename(
+                columns={metric: f"test_{metric}" for metric in test_metric_columns}
             ),
             on="feature_set",
             how="left",
         )
 
-        return summary, baseline_walk_forward_row, baseline_calibration_row, baseline_test_row
+        return summary, baseline_walk_forward_row, baseline_validation_refit_row, baseline_test_row
 
     @classmethod
     def build_validation_selected_family_test_report(
@@ -185,9 +176,11 @@ class ModelReportBuilder:
             "validation_accuracy",
             "validation_balanced_accuracy",
             "validation_f1_score",
+            "validation_f1_weighted",
             "test_accuracy",
             "test_balanced_accuracy",
             "test_f1_score",
+            "test_f1_weighted",
             "price_volume_baseline_feature_set",
             "price_volume_baseline_test_balanced_accuracy",
             "test_balanced_accuracy_change_vs_price_volume",
@@ -201,6 +194,7 @@ class ModelReportBuilder:
                 "walk_forward_mean_accuracy": "validation_accuracy",
                 "walk_forward_mean_balanced_accuracy": "validation_balanced_accuracy",
                 "walk_forward_mean_f1_score": "validation_f1_score",
+                "walk_forward_mean_f1_weighted": "validation_f1_weighted",
             }
         )
 

@@ -741,15 +741,16 @@ class FeatureFrameBuilder:
                     cls.add_group_lag(frame, source_col, f"{source_col}_lag{lag}", lag=lag)
 
         frame["future_return_1d"] = price_group.shift(-1) / frame[price_column] - 1.0
+        frame["target_available"] = frame["future_return_1d"].notna()
         frame["target"] = np.select(
             [
                 frame["future_return_1d"] < -neutral_band,
+                frame["future_return_1d"].abs().le(neutral_band),
                 frame["future_return_1d"] > neutral_band,
             ],
-            [0, 1],
+            [0, 1, 2],
             default=np.nan,
         )
-        frame["target_available"] = frame["future_return_1d"].notna()
         frame["is_neutral"] = frame["target_available"] & frame["future_return_1d"].abs().le(neutral_band)
         return frame
 
