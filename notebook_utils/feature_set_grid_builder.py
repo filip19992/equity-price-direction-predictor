@@ -39,6 +39,11 @@ class FeatureSetGridBuilder:
         "return_5d",
         "return_20d",
         "rolling_volatility_20d",
+        # Rich-price dataset fields derived from same-session OHLC data.
+        "intraday_return",
+        "overnight_gap_return",
+        "daily_high_low_range",
+        "close_position_in_daily_range",
     ]
 
     BASE_VOLUME_OPTION = "volume zscore 20d"
