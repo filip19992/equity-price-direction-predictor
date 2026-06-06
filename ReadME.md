@@ -1,434 +1,271 @@
-# Build conda env:
-1. conda env create -f environment.yml (if restared required conda env update -f environment.yml --prune)
-2. conda activate equity-price-direction-predictor
-3. For FinBERT on Windows, keep `pytorch` and `transformers` conda-managed. Avoid mixing pip-installed `torch` into this env.
+# Equity Price Direction Prediction
 
-# Import data
-1. python -m equity_data_importers.run_all
-2. To run only reddit comments importer: `python -m equity_data_importers.run_all reddit_comments`
-3. To run for another stock (example AAPL):
-   `python -m equity_data_importers.run_all --ticker AAPL --company-name Apple --gdelt-query "(Apple OR AAPL)" --trends-query "Apple" --output-tag aapl`
-4. To run only selected importers for another stock:
-   `python -m equity_data_importers.run_all google_trends gdelt stock_price --ticker MSFT --company-name Microsoft --output-tag msft`
+This repository contains the code, datasets and experiment notebooks used for a master's thesis on predicting short-term stock price direction with market data and alternative data sources.
 
-# Notes
-1. The reddit importer now compares VADER and FinBERT sentiment. The first FinBERT run may download the model weights into the local Hugging Face cache.
-2. For non-default profiles, output files are automatically suffixed with `_<output_tag>` (defaults to ticker), so runs for different stocks do not overwrite each other.
-3. If Google Trends fails with `Retry.__init__() got an unexpected keyword argument 'method_whitelist'`, fix dependencies in the active env with:
-   `pip install "urllib3<2"`
+The current research setup is a three-class classification problem. The model predicts whether the next trading-session return is negative, neutral or positive. The active dataset is the rich-price, session-aligned, full-history panel:
 
+```text
+data/datasets/stock_panel_nine_tickers_session_aligned_full_history_rich_price_adjusted_google_score_raw.csv
+```
 
-# Models training notes
+The active configuration is stored in:
 
-## Summary of Model Selection, Feature Engineering, and Experimental Refinements
+```text
+notebook_utils/experiment_config.py
+```
 
-### Initial Single-Ticker Phase
+## Current Experiment Variant
 
-The initial phase of the study was conducted on Tesla-only data and focused on repeated experimentation with multiple neural and tree-based model variants. During this stage, strong in-sample performance was frequently observed, while out-of-sample performance remained weak. This pattern indicated that the main limitation was not the absence of a more advanced architecture, but rather a combination of weak predictive signal, limited sample size, and unstable generalization.
+The current experiment uses:
 
-The early experiments showed that:
-- neural networks often achieved very high training scores but poor test results,
-- tree-based models also exhibited substantial overfitting,
-- repeated model changes did not materially improve out-of-sample performance.
+- a nine-ticker panel dataset with `AAPL`, `AMD`, `AMZN`, `GOOGL`, `META`, `MSFT`, `NFLX`, `NVDA` and `TSLA`,
+- rich OHLCV-style price data, not only adjusted close prices,
+- Google Trends, GDELT news data and Reddit sentiment/coverage variables,
+- a three-class target based on the next-session return,
+- chronological train, validation and test splits,
+- multiple feature-set variants built centrally in `notebook_utils/feature_set_grid_builder.py`,
+- several model families evaluated through notebooks in `notebooks/`.
 
-As a result, the focus was shifted away from architecture search and toward data representation, evaluation design, and feature quality.
+In the current modeling configuration, `NFLX` is excluded from model training and evaluation. The raw dataset still contains `NFLX`, but the experiment configuration removes it before fitting models.
 
-### Transition to a Two-Ticker Panel
+## Repository Structure
 
-The analysis was then extended to a joint `TSLA + AAPL` dataset. A shared panel dataset was constructed while maintaining compatibility with the original Tesla file structure. This enabled pooled and ticker-specific experiments to be performed under a common framework.
+```text
+data/                         Raw and processed datasets
+  datasets/                   Final panel datasets and dataset audits
+  equity_data/                Imported equity and alternative data files
+  gpw_data/                   Additional GPW-related data
 
-The move to two tickers allowed:
-- comparison of pooled vs separate-per-ticker training,
-- comparison of `price_only`, `alt_only`, and `price_plus_alt` feature sets,
-- use of common train/test splits and directly comparable evaluation outputs.
+datamerger/                   Scripts and notebooks for merging source data into panel datasets
+equity_data_importers/        Importers for stock prices, Google Trends, GDELT and Reddit data
+gpw_data_visualisation/       Additional visualization utilities
+notebook_utils/               Shared experiment configuration, feature generation, splits and metrics
+notebooks/                    EDA and model-training notebooks
+environment.yml               Conda environment definition
+ReadME.md                     Project overview
+```
 
-Although the two-ticker setting produced numerically better results than the earliest Tesla-only experiments, the improvement was attributed mainly to:
-- a simpler binary prediction target,
-- a larger pooled sample,
-- clearer baselines,
-- and a more structured evaluation framework.
+## Data Sources
 
-No strong evidence was found that the addition of a second ticker alone solved the predictive problem.
+The project combines market data and alternative data. The main source groups are:
 
-### Baseline Model Comparisons
+| Source group | Main purpose | Import location |
+| --- | --- | --- |
+| Yahoo Finance | Historical stock prices and trading volume | `equity_data_importers/stock_price_importer.py`, `equity_data_importers/stock_price_rich_importer.py` |
+| Yahoo Finance benchmark data | Market context, mainly QQQ benchmark variables | `equity_data_importers/market_benchmark_importer.py` |
+| Google Trends | Search interest for company- or ticker-related queries | `equity_data_importers/google_trends_importer.py` |
+| GDELT | News/event coverage variables | `equity_data_importers/gdelt_importer.py` |
+| Reddit dumps | Reddit post and comment activity related to selected tickers | `equity_data_importers/reddit_importer.py`, `equity_data_importers/reddit_comments_importer.py` |
+| Sentiment tools | Sentiment scores calculated during data import | VADER and optional FinBERT utilities in `equity_data_importers/` |
 
-Several baseline comparisons were introduced in order to determine whether alternative data added predictive value over price-derived variables.
+The current modeling feature grid uses VADER-based Reddit comment sentiment features. FinBERT sentiment columns may exist in prepared source files, but they are not part of the currently active model feature grid.
 
-Three main feature configurations were tested:
-- `price_only`,
-- `alt_only`,
-- `price_plus_alt`.
+## Dataset Construction
 
-Across these baselines, the following pattern emerged:
-- `alt_only` was generally weak,
-- `price_only` was consistently strong and stable,
-- `price_plus_alt` occasionally improved performance, but not uniformly across tickers or models.
+Final modeling datasets are built in `datamerger/`. The current dataset variant is produced by the rich-price session-aligned builder:
 
-This suggested that alternative data, if useful, provided only incremental rather than dominant signal.
+```text
+datamerger/rich_price_session_aligned_full_history_builder.py
+```
 
-### Horizon Comparison
+This builder combines stock prices and alternative data into one panel. The output is organized by ticker and trading session date. Calendar-based alternative data is assigned to trading sessions so it can be used consistently with market data.
 
-A comparison between `1D` and `5D` prediction horizons was then conducted. It had been hypothesized that alternative data might become more useful over a slightly longer horizon. This expectation was not supported.
+The main current dataset file is:
 
-The `5D` experiments generally produced:
-- lower balanced accuracy,
-- weaker discrimination,
-- and results closer to random classification.
+```text
+data/datasets/stock_panel_nine_tickers_session_aligned_full_history_rich_price_adjusted_google_score_raw.csv
+```
 
-Consequently, the main focus remained on `1D` directional prediction.
+Associated metadata and audit files describe the generated dataset:
 
-### Introduction of Lagged and Temporal Features
+```text
+data/datasets/stock_panel_nine_tickers_session_aligned_full_history_rich_price_adjusted_google_score_metadata.json
+data/datasets/stock_panel_nine_tickers_session_aligned_full_history_rich_price_adjusted_google_score_summary.csv
+data/datasets/stock_panel_nine_tickers_session_aligned_full_history_rich_price_adjusted_google_score_source_audit.csv
+data/datasets/stock_panel_nine_tickers_session_aligned_full_history_rich_price_adjusted_google_score_reddit_coverage_audit.csv
+```
 
-The next stage involved explicit lag construction and rolling transformations. Instead of relying only on current-day alternative data, lagged and rolling variants were introduced.
+The current rich-price raw panel contains:
 
-These included:
-- lagged features,
-- rolling means,
-- rolling gaps,
-- surprise-style features relative to recent history.
+- 9 tickers,
+- 1,255 trading sessions per ticker,
+- 11,295 rows in total,
+- dates from `2021-01-04` to `2025-12-31`,
+- 48 columns before model-specific feature engineering.
 
-This change improved results more than introducing more complex neural architectures. It also suggested that alternative data were more likely to matter as delayed or contextual signals than as raw same-session levels. However, broad lagged feature spaces also increased overfitting when the number of derived variables became too large.
+## Target Variable
 
-### Model Family Comparisons
+The target is created during feature-frame construction, not stored directly as a ready-made class column in the raw CSV.
 
-A wider comparison across model classes was then performed. The following model families were tested:
-- logistic regression,
-- SVM,
-- random forest,
-- histogram gradient boosting,
-- small MLP.
+The target is based on the next-session return:
 
-No single model class consistently dominated across all settings. More complex models did not systematically outperform simpler ones. In particular:
-- MLP did not provide a breakthrough,
-- tree-based models frequently overfit,
-- simpler regularized models often remained competitive.
+```text
+future_return_1d = next_close / current_close - 1
+```
 
-This shifted the emphasis further toward feature representation and experimental design.
+The current three-class setup uses a neutral band of `0.005`:
 
-### Strengthening of the Evaluation Framework
+| Class | Meaning | Rule |
+| --- | --- | --- |
+| `0` | down | `future_return_1d < -0.005` |
+| `1` | neutral | `-0.005 <= future_return_1d <= 0.005` |
+| `2` | up | `future_return_1d > 0.005` |
 
-To improve methodological rigor, the evaluation framework was extended with:
-- source-specific ablation studies,
-- threshold tuning,
-- bootstrap confidence intervals,
-- DeLong AUC comparisons,
-- walk-forward fold comparisons.
+The class labels are defined in `notebook_utils/metrics.py`.
 
-These additions made the conclusions more defensible and also showed that several initially promising effects were either unstable or not statistically convincing.
+## Feature Engineering
 
-### Session Alignment Correction
+Feature construction is centralized in:
 
-One of the most important methodological corrections concerned time alignment. In the earlier pipeline, alternative data from weekends and non-trading days were not being aligned optimally with trading sessions. A new `session-aligned` dataset was then constructed so that alternative information was attached to the same or next relevant trading session.
+```text
+notebook_utils/modeling.py
+notebook_utils/feature_set_grid_builder.py
+```
 
-This correction changed the results materially:
-- Apple began to show more plausible positive effects from alternative data,
-- Tesla remained difficult and often continued to favor `price_only`,
-- the importance of temporal alignment became clear.
+Every feature set includes the core price-derived features:
 
-This was a substantive methodological improvement rather than a cosmetic change.
+```text
+return_1d
+return_5d
+return_20d
+rolling_volatility_20d
+intraday_return
+overnight_gap_return
+daily_high_low_range
+close_position_in_daily_range
+```
 
-### Source-by-Source Ablation
+Additional feature-set variants add selected groups of variables:
 
-Instead of combining all alternative sources into a single large block, each source was then tested separately:
-- Google Trends,
-- GDELT,
-- Reddit sentiment,
-- Reddit attention.
+- volume features,
+- Google Trends features,
+- GDELT coverage/news features,
+- Reddit coverage and sentiment features,
+- attention-type features,
+- lagged alternative-data features,
+- combined feature groups.
 
-This revealed that the sources behaved very differently:
-- `GDELT` was usually the weakest source,
-- `Google Trends` performed best in small linear setups,
-- `Reddit` was the most promising source overall,
-- and all effects were strongly ticker-specific.
+The feature grid is built once and reused by the model notebooks. This keeps model comparisons consistent across algorithms.
 
-This stage showed that broad, undifferentiated alt-data combinations were not justified.
+## Train, Validation and Test Split
 
-### Investigation of Missing Values and Reddit Aggregation
+The project uses chronological splitting. Rows are not shuffled. This is important because the data is time series-like and later observations must not leak into earlier training periods.
 
-A separate line of investigation examined whether null or zero sentiment values from Reddit were being interpreted incorrectly. Several comparisons were run using:
-- missing-aware encodings,
-- presence flags,
-- controlled missingness variants.
+The current setup uses:
 
-It was found that pure missing-value handling was not the main issue. The more important problem was the premature aggregation of Reddit submissions and comments into a single sentiment signal.
+- training period: early dataset history,
+- validation period: middle chronological block,
+- test period: final chronological block,
+- one-session gaps between split boundaries,
+- walk-forward validation inside the training period for feature/model selection.
 
-When Reddit submissions and comments were kept separate:
-- Apple improved clearly,
-- Tesla still did not show consistent benefit.
+In the current configuration after excluding `NFLX`, the split is approximately:
 
-Additional tests with prior-filled combined signals showed that some improvement over naive aggregation could be achieved, but performance remained worse than when source separation was preserved.
+| Split | Date range | Modeled rows |
+| --- | --- | --- |
+| Train | `2021-01-04` to `2023-10-19` | 5,632 |
+| Validation | `2023-10-23` to `2024-09-27` | 1,880 |
+| Test | `2024-10-01` to `2025-12-31` | 2,504 |
 
-### Alternative Sentiment Representations
+Split logic is implemented in:
 
-Several alternative representations of Reddit sentiment were then examined:
-- numeric sentiment features,
-- categorical sentiment (`positive`, `neutral`, `negative`),
-- more stationary transformations,
-- rolling-relative and surprise-based features.
+```text
+notebook_utils/split_utils.py
+```
 
-These changes did not produce a universal improvement. Categorical sentiment helped only locally, mainly for Apple in one nonlinear setup. In most cases, richer sentiment representations increased feature count and made overfitting more likely unless strong feature reduction was applied.
+## Notebooks
 
-### Identification of Feature Count as a Central Issue
+The main notebooks are located in `notebooks/`.
 
-At this stage, the main limitation became clearer: feature sets had become too wide relative to the available sample size.
+| Notebook | Purpose |
+| --- | --- |
+| `feature_exploratory_analysis.ipynb` | Preliminary feature analysis: missing values, feature families, correlations, autocorrelation, target relationships and descriptive plots |
+| `logistic_regression.ipynb` | Logistic regression experiments |
+| `random_forest.ipynb` | Random forest experiments |
+| `xgboost.ipynb` | XGBoost experiments |
+| `lightgbm.ipynb` | LightGBM experiments |
+| `neutral_net.ipynb` | Feed-forward neural network experiments |
+| `svm.ipynb` | Support vector machine experiments |
+| `rnn.ipynb` | Recurrent neural network experiments |
+| `ticker_attention_diagnostics.ipynb` | Diagnostics for ticker-level attention/alternative-data effects |
 
-A recurring pattern was observed:
-- training performance increased sharply as more alternative features were added,
-- test performance improved little or deteriorated,
-- train/test gaps became very large.
+The notebooks are designed to use the shared configuration and utility modules instead of duplicating split, feature and metric logic.
 
-This indicated that the strongest source of instability was not necessarily model choice, but excessive feature dimensionality.
+## Modeling Workflow
 
-### Small Selected Feature Sets
+The general modeling workflow is:
 
-A new series of experiments was therefore designed around compact, manually selected feature sets. Instead of large collections of transformations, small sets were used for:
-- Google,
-- Reddit,
-- and Google+Reddit combinations.
+1. Load the active experiment configuration from `notebook_utils/experiment_config.py`.
+2. Load the active raw panel dataset from `data/datasets/`.
+3. Build the feature frame and target variable.
+4. Apply chronological train, validation and test splits.
+5. Generate feature-set variants with `FeatureSetGridBuilder`.
+6. Train candidate models on training data.
+7. Select model and feature variants using validation or walk-forward validation results.
+8. Refit the selected setup on train plus validation data.
+9. Evaluate the final selected model on the held-out test set.
+10. Save model reports and plots to notebook output folders.
 
-This produced one of the strongest improvements in the project. Small hand-picked feature sets performed substantially better than broad alt-data blocks. In particular:
-- `ALL + random_forest + small Reddit` outperformed `price_only`,
-- `ALL + logreg + small Google+Reddit` also outperformed `price_only`,
-- Apple benefited most clearly,
-- Tesla improved in some settings but remained mixed.
+The shared reporting and metrics code is located in:
 
-This strongly suggested that earlier weak results were partly caused by excessive feature count.
+```text
+notebook_utils/metrics.py
+notebook_utils/model_report_builder.py
+```
 
-### Feature Count Sweeps by Source
+## Environment Setup
 
-A structured sweep was then performed in which the number of features per source was explicitly varied. The best-performing ranges were found to be small:
-- approximately `top 4` Reddit features,
-- approximately `top 2` Google features.
+Create the Conda environment from `environment.yml`:
 
-The main findings were:
-- Reddit was the strongest source overall,
-- Google was the second strongest,
-- GDELT remained the weakest,
-- increasing the number of features beyond a small set usually did not help and often harmed generalization.
+```bash
+conda env create -f environment.yml
+conda activate equity-price-direction-predictor
+```
 
-This stage was crucial in identifying a practical feature-count sweet spot.
+If the environment already exists and dependencies changed, update it with:
 
-### Final Focused Benchmark
+```bash
+conda env update -f environment.yml --prune
+```
 
-A final narrow benchmark was then constructed using only the strongest variants identified in the sweep:
-- `logreg: price_top14 vs price14_plus_google_top2`
-- `random_forest: price_top14 vs price14_plus_reddit_top4`
+The environment uses Python 3.11 and includes the main modeling and analysis libraries:
 
-This final benchmark showed consistent positive point-estimate improvements for:
-- `AAPL`,
-- `TSLA`,
-- and the pooled `ALL` case.
+- pandas and numpy,
+- scikit-learn,
+- XGBoost and LightGBM,
+- TensorFlow and PyTorch,
+- matplotlib and seaborn,
+- yfinance, pytrends and vaderSentiment,
+- transformers for optional FinBERT-related processing.
 
-The strongest final variants were:
-- `ALL + logreg + Google top2`,
-- `ALL + random_forest + Reddit top4`.
+## Running Data Importers
 
-However, two important limitations remained:
-- bootstrap confidence intervals still overlapped,
-- DeLong p-values did not cross the conventional `0.05` significance threshold.
+The importer package can be run from the repository root. Example commands:
 
-Therefore, the final evidence was interpreted as promising but not fully conclusive.
+```bash
+python -m equity_data_importers.run_all
+python -m equity_data_importers.run_all reddit_comments
+python -m equity_data_importers.run_all --ticker AAPL --company-name Apple --gdelt-query "(Apple OR AAPL)" --trends-query "Apple" --output-tag aapl
+```
 
-## Overall Conclusions
+For normal model experiments, the already prepared dataset in `data/datasets/` is used. Re-running importers is only needed when rebuilding source data.
 
-Several broad conclusions emerged from the full experimental process.
+## Suggested Work Order
 
-First, the largest improvements were not produced by changing model architecture. The most important gains came from:
-- correcting session alignment,
-- separating alternative data sources,
-- avoiding premature aggregation,
-- and reducing feature count.
+For the current thesis experiment, the practical order is:
 
-Second, `price_only` remained a strong and often winning benchmark throughout the study. Alternative data did not provide a universal advantage.
+1. Review or rebuild source imports if needed.
+2. Build or verify the rich-price session-aligned dataset in `datamerger/`.
+3. Run `notebooks/feature_exploratory_analysis.ipynb` to document preliminary feature behavior.
+4. Run model notebooks from `notebooks/` using the same active configuration.
+5. Compare saved validation and test reports across models.
+6. Use the final held-out test results only for final model assessment.
 
-Third, the most credible incremental gains came from:
-- small `Google Trends` feature sets in linear models,
-- small `Reddit` feature sets in tree-based models.
+## Reproducibility Notes
 
-Fourth, the effect of alternative data was clearly ticker-specific:
-- Apple showed more consistent benefit from alternative data,
-- Tesla remained harder and often continued to favor `price_only`.
-
-Fifth, `GDELT` was the least useful source within the tested setup.
-
-Finally, the main unresolved limitation remained sample size. With only two tickers, the most defensible interpretation is that a weak but plausible incremental signal from carefully selected alternative data was observed, but that no robust and universally generalizable advantage was established.
-
-## Quantitative Addendum for the `0.5%` Benchmark Series
-
-The later benchmark directories make the same story clearer in metric form: the biggest gains came from problem framing, evaluation fixes, and careful feature design, not from simply adding model complexity.
-
-### Best point estimates by stage
-
-| Stage | Best model | Test balanced accuracy | Test accuracy | Main note |
-| --- | --- | ---: | ---: | --- |
-| `base_model_benchmark_0p5pct` | `logreg` | `0.3723` | `0.3934` | weak 3-class baseline |
-| `base_model_benchmark_0p5pct_improved` | `random_forest_ranked` | `0.4618` | `0.4868` | large gain from richer feature engineering |
-| `base_model_benchmark_0p5pct_v2` | `extra_trees_reg_leaf5_mf035` | `0.4961` | `0.5060` | better regularization, still 3-class |
-| `base_model_benchmark_binary_0p5pct` | `random_forest_enriched` | `0.5485` | `0.5503` | biggest jump came from the binary target |
-| `base_model_benchmark_binary_0p5pct_v4` | `random_forest_enriched_short_backward_selected` | `0.5593` | `0.5594` | best result in the core `v2-v10` single benchmark line |
-| `base_model_benchmark_binary_0p5pct_v10` | `random_forest_requested_features_tuned` | `0.5515` | `0.5585` | near-peak result with only `13` numeric features |
-| `base_model_benchmark_binary_0p5pct_nine_vs_no_nflx_vader_nullaware` | `extra_trees_requested_features_tuned` | `0.5564` | `0.5577` | best of the `nine_vs_no_nflx*` comparisons |
-| `base_model_benchmark_binary_0p5pct_eight_tickers_vader_nullaware_methodology_fixed` | `extra_trees_requested_features_tuned` | `0.5634` | `0.5624` | methodology correction added another step up |
-| `base_model_benchmark_binary_0p5pct_eight_tickers_vader_nullaware_ensemble_routing` | `ensemble_et_rf_equal` | `0.5675` | `0.5647` | simple ET/RF ensemble beat either base learner |
-| `base_model_benchmark_binary_0p5pct_eight_tickers_vader_nullaware_external_lag_sweep` | `gdelt_lag_5__google_lag_5` | `0.5844` | `0.5774` | best overall point estimate in these directories |
-
-### What helped
-
-- Better feature engineering in the original `0.5%` task helped a lot: best test balanced accuracy improved from `0.3723` to `0.4618`, then to `0.4961`.
-- Switching from the 3-class setup to the binary `0.5%` target was the single biggest step change: `0.4961 -> 0.5485`.
-- Moderate feature pruning helped in the main binary line: `v2` reached `0.5548`, while backward selection in `v4` improved that to `0.5593`.
-- The `eight_tickers_no_nflx + vader + nullaware` setup was clearly stronger than the earlier scenario variants: best test balanced accuracy reached `0.5564`, versus `0.5436` in the plain `nine_tickers_all` setup.
-- The methodology fix mattered: `0.5564 -> 0.5634`.
-- A simple equal-weight ET/RF ensemble helped a bit more: `0.5634 -> 0.5675` (`+0.0041` balanced accuracy over the methodology-fixed ET baseline).
-- External lag features helped the most in the late-stage eight-ticker setup. In the lag sweep, `gdelt_lag_5 + google_lag_5` reached `0.5844` balanced accuracy and improved by `+0.0169` over the no-lag external baseline used inside that sweep.
-- `v10` is a useful practical compromise: it did not beat `v4`, but it recovered `0.5515` balanced accuracy with only `13` numeric features instead of `126-127`.
-
-### What did not help
-
-- Per-ticker training in `base_model_benchmark_binary_0p5pct_v7` was a clear regression: best test balanced accuracy fell to `0.5027`, almost back to dummy level.
-- The very compact `12`-feature designs in `v8` and `v9` underfit. Their best test balanced accuracy values were only `0.5167` and `0.5255`.
-- Adding FinBERT on top of the `vader_nullaware` scenario did not help. Best test balanced accuracy dropped from `0.5564` to `0.5474`.
-- The extra Reddit VADER lag sweep did not beat the simpler external lag sweep. Its best result was `0.5780`, below the `0.5844` from the plain external lag sweep.
-- Stacking did not improve on the simple ET/RF ensemble. The best rows in `stacking`, `stacking_oof_train`, and `ensemble_adjustments` all stayed at `0.5675` or matched the same ensemble point estimate rather than surpassing it.
-- The feature sweet-spot rerun did not beat the current full null-aware setup. The reduced variants topped out at `0.5441` balanced accuracy (`price_plus_reddit_activity4`), while `current_nullaware_full` remained better at `0.5564`.
-- The `5D` horizon still looked weaker than the best `1D` runs. In `base_model_benchmark_binary_5d_band_sweep_v6`, the best non-dummy point estimate was `0.5480` balanced accuracy at the `2.0%` neutral band, which remained below the best `1D` binary benchmark (`0.5593` in `v4`).
-
-### Validation-first follow-up around the frozen external baseline
-
-After freezing the leakage-safe base model selected by validation balanced accuracy, a set of targeted follow-up checks was run around:
-
-- `requested_momentum_volume_sentiment__gdelt_lag_5__google_lag_1`
-- validation balanced accuracy: `0.5154`
-- test balanced accuracy: `0.5633`
-
-The main follow-up findings were:
-
-- Adding external summary or delta features did not beat the frozen baseline on validation.
-  - `+ gdelt_mean_lag_1_3` reached `0.5120` validation balanced accuracy.
-  - `+ gdelt_delta_1` reached `0.5118`.
-  - `+ google_delta_1` reached `0.5081`.
-  - `+ gdelt_mean_lag_1_5` reached only `0.5058` on validation, even though its test balanced accuracy rose to `0.5785`.
-  - `+ google_mean_lag_1_2` was weakest at `0.4992`.
-- Adding short Reddit post-count lags on top of the baseline also did not help on validation.
-  - `subm_reddit_posts_lag_1..2` reached `0.5124`.
-  - `comm_reddit_posts_lag_1..2` reached `0.5060`.
-  - adding both submission and comment post-count lags reached `0.5044`.
-  - These variants often looked better on test than on validation, so they were not selected.
-- Replacing the current raw Reddit post-count features worked better than simply adding lagged counts.
-  - Replacing `subm_reddit_posts` and `comm_reddit_posts` with `subm_reddit_has_posts_lag_1..2` and `comm_reddit_has_posts_lag_1..2` improved validation balanced accuracy to `0.5191` (`+0.0037` vs the frozen baseline).
-  - The same candidate had test balanced accuracy `0.5607`, slightly below the baseline `0.5633`.
-  - Replacing the current raw post counts with lagged raw post counts did not win on validation: the best such replacement reached `0.5115`.
-
-So the follow-up around the frozen baseline suggests:
-
-- raw external summary/delta additions are not justified by validation,
-- simple Reddit lag additions are not justified by validation,
-- but replacing current Reddit post-count features with lagged binary `has_posts` indicators for both submissions and comments is the strongest validation-selected refinement tested so far.
-
-### Compact benchmark follow-up notebooks
-
-Several later compact notebooks were used as controlled checks with very small feature sets and simpler model families. These runs were useful mainly for testing whether a small number of carefully chosen signals could survive under stronger regularization or simpler model designs.
-
-#### Compact standardized signal notebooks
-
-The first compact benchmark used only:
-- basic price and volume features,
-- `comm_reddit_vader_mean_lag_1`,
-- `gdelt_sentiment_score_lag_1`,
-- and a `google_trends_direction_1d` feature.
-
-Its main results were:
-- compact standardized logistic regression:
-  - validation balanced accuracy: `0.5090`
-  - test balanced accuracy: `0.4816`
-- compact MLP with the original small `3`-config sweep:
-  - validation balanced accuracy: `0.5024`
-  - test balanced accuracy: `0.5250`
-- compact MLP with the wider `48`-config validation sweep:
-  - validation balanced accuracy: `0.5201`
-  - test balanced accuracy: `0.4911`
-
-This showed that:
-- widening the MLP search helped validation materially over both the compact logistic baseline and the first small MLP sweep,
-- but the better validation point estimate did not translate into a robust final test gain.
-
-#### Current-day sentiment compact MLP
-
-For an end-of-day prediction interpretation, the lagged Reddit comment sentiment and lagged GDELT sentiment were then replaced with their current-day values:
-- `comm_reddit_vader_mean`
-- `gdelt_sentiment_score`
-
-With the same `48`-config MLP sweep:
-- validation balanced accuracy improved further to `0.5289`,
-- but test balanced accuracy fell to `0.4830`.
-
-So in this compact MLP line:
-- current-day sentiment looked better on validation than lagged sentiment,
-- but neither version produced a convincing test result on a single final holdout block.
-
-#### Rolling outer time evaluation of the compact current-sentiment MLP
-
-To get a more defensible view than a single holdout block, the compact current-sentiment MLP was then evaluated with:
-- `3` rolling outer time windows,
-- inner `3`-fold walk-forward validation,
-- `48` MLP hyperparameter configurations per outer fold,
-- and validation-only threshold tuning over `21` probability thresholds.
-
-The mean results were:
-- mean outer validation balanced accuracy: `0.5352`
-- mean outer test balanced accuracy with tuned threshold: `0.4964`
-- mean outer test balanced accuracy with default `0.50` threshold: `0.4941`
-
-This added two important conclusions:
-- threshold tuning helped only marginally on average (`+0.0024` mean outer test balanced accuracy),
-- and the selected MLP configuration was unstable across outer folds.
-
-So the compact MLP looked promising on inner validation, but weak on repeated outer-time generalization.
-
-### `notebooksv2` simple z-score feature-set finding
-
-A separate simple z-score logistic notebook compared the following compact nested feature sets:
-- price only,
-- price + volume,
-- price + volume + GDELT,
-- price + volume + GDELT + Reddit,
-- price + volume + all alternative data.
-
-On that single holdout benchmark, the best result came from:
-- `Model C - price + volume + GDELT`
-  - accuracy: `0.5462`
-  - balanced accuracy: `0.5432`
-  - AUC: `0.5598`
-
-The ranking was:
-1. `Model C - price + volume + GDELT`
-2. `Model E - price + volume + all alternative data`
-3. `Model D - price + volume + GDELT + Reddit`
-4. `Model A - price only`
-5. `Model B - price + volume`
-
-The main interpretation from that notebook was:
-- `GDELT` helped clearly in this compact z-score linear setup,
-- `volume` alone did not help,
-- adding `Reddit` and then `Google` on top of the GDELT model did not improve the single-holdout result,
-- and a simple compact feature set could remain competitive without large lag expansions.
-
-This result should still be treated cautiously because it came from a simple holdout notebook rather than a walk-forward validation benchmark.
-
-### Best models to carry forward
-
-If the goal is the strongest raw test point estimate from these runs, the best candidate is:
-
-- `base_model_benchmark_binary_0p5pct_eight_tickers_vader_nullaware_external_lag_sweep`
-  - model: `gdelt_lag_5__google_lag_5`
-  - test balanced accuracy: `0.5844`
-  - test accuracy: `0.5774`
-  - test macro F1: `0.5769`
-
-If the goal is a simpler and more reproducible benchmark line, the strongest choices are:
-
-- `base_model_benchmark_binary_0p5pct_v4` for the best result in the main binary progression (`0.5593` balanced accuracy),
-- `base_model_benchmark_binary_0p5pct_v10` for a much smaller feature set with only a small loss (`0.5515` balanced accuracy),
-- `base_model_benchmark_binary_0p5pct_eight_tickers_vader_nullaware_ensemble_routing` for the best non-lagged eight-ticker null-aware ensemble (`0.5675` balanced accuracy),
-- the frozen validation-selected external baseline `gdelt_lag_5 + google_lag_1` as the clean reproducible starting point for local refinement,
-- and the follow-up replacement candidate that swaps current `subm_reddit_posts` and `comm_reddit_posts` for lagged `has_posts` features `1..2`, because it is the strongest validation-selected refinement tested around that frozen baseline (`0.5191` validation balanced accuracy vs `0.5154` for the original frozen base).
+- Run notebooks from the repository root or make sure the root directory is available on the Python path.
+- The active experiment is controlled by `notebook_utils/experiment_config.py`.
+- Feature-set definitions are controlled by `notebook_utils/feature_set_grid_builder.py`.
+- The notebooks should not define separate dataset paths or split rules unless a deliberate new experiment variant is being created.
+- Large generated outputs should remain in notebook output folders and do not need to be committed unless they are required for reporting.
+- The final test split should be treated as held-out data and should not be used during model or feature selection.
